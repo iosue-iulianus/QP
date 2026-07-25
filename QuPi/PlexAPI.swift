@@ -1,0 +1,896 @@
+#if os(macOS)
+import Foundation
+import VideoToolbox
+
+final class PlexConfiguration {
+    var serverURL: URL
+    var fallbackURLs: [URL]?
+    var token: String
+    /// Stable identifier for the server (plex.tv clientIdentifier, a UUID
+    /// for manually added servers, or "legacy" for a migrated setup); used
+    /// to route items back to the server they came from.
+    var serverID: String
+    var serverName: String
+
+    init(serverURL: URL, fallbackURLs: [URL]? = nil, token: String, serverID: String = "", serverName: String = "") {
+        self.serverURL = serverURL
+        self.fallbackURLs = fallbackURLs
+        self.token = token
+        self.serverID = serverID
+        self.serverName = serverName
+    }
+}
+
+/// A connected Plex server. The list lives in UserDefaults; each server's
+/// token is a separate Keychain item so no secrets are stored alongside.
+struct PlexServer: Codable, Identifiable, Hashable {
+    let id: String
+    var name: String
+    var urlString: String
+    var fallbackURLStrings: [String]?
+}
+
+/// Persistence for the connected-server list, including migration of the
+/// older single-server settings (plexServerURL + Keychain plexToken).
+enum PlexServerStore {
+    private static let legacyID = "legacy"
+
+    static func load() -> [PlexServer] {
+        if let data = UserDefaults.standard.data(forKey: SettingsKeys.plexServers) {
+            return (try? JSONDecoder().decode([PlexServer].self, from: data)) ?? []
+        }
+        return migrateLegacyServer()
+    }
+
+    static func save(_ servers: [PlexServer]) {
+        let data = (try? JSONEncoder().encode(servers)) ?? Data("[]".utf8)
+        UserDefaults.standard.set(data, forKey: SettingsKeys.plexServers)
+    }
+
+    static func token(for serverID: String) -> String? {
+        KeychainStore.string(for: KeychainKeys.plexServerToken(serverID))
+    }
+
+    static func setToken(_ token: String?, for serverID: String) {
+        KeychainStore.set(token, for: KeychainKeys.plexServerToken(serverID))
+    }
+
+    /// Removes a server and its Keychain token.
+    static func remove(_ serverID: String) {
+        save(load().filter { $0.id != serverID })
+        setToken(nil, for: serverID)
+    }
+
+    /// Converts a pre-multi-server setup into a single "legacy" entry,
+    /// moving the token into a per-server Keychain item and scoping the
+    /// existing library selections to the migrated server.
+    private static func migrateLegacyServer() -> [PlexServer] {
+        let defaults = UserDefaults.standard
+        guard let urlString = defaults.string(forKey: SettingsKeys.plexServerURL), !urlString.isEmpty,
+              let token = KeychainStore.stringMigratingFromDefaults(for: KeychainKeys.plexToken),
+              !token.isEmpty else {
+            return []
+        }
+        let server = PlexServer(
+            id: legacyID,
+            name: URL(string: urlString)?.host() ?? "Plex Server",
+            urlString: urlString
+        )
+        save([server])
+        setToken(token, for: legacyID)
+        if let selected = defaults.string(forKey: SettingsKeys.plexSelectedLibraries), !selected.isEmpty {
+            let scoped = selected.split(separator: ",").map { "\(legacyID):\($0)" }
+            defaults.set(scoped.joined(separator: ","), forKey: SettingsKeys.plexSelectedLibraries)
+        }
+        defaults.removeObject(forKey: SettingsKeys.plexServerURL)
+        KeychainStore.set(nil, for: KeychainKeys.plexToken)
+        return [server]
+    }
+}
+
+struct PlexLibrary: Identifiable, Hashable, Codable {
+    let key: String
+    let title: String
+    /// Plex library type: "movie", "show", or "artist".
+    let type: String
+
+    var id: String { key }
+
+    var mediaType: MediaType? {
+        switch type {
+        case "movie": .movies
+        case "show": .tvShows
+        case "artist": .music
+        default: nil
+        }
+    }
+}
+
+/// Minimal Plex Media Server client. Requests JSON via the Accept header and
+/// authenticates with an X-Plex-Token (pasted directly or obtained through
+/// the plex.tv PIN link flow below).
+struct PlexClient {
+    static let clientIdentifier = "QuPiMenuBar"
+    static let productName = "QuPi"
+
+    let config: PlexConfiguration
+
+    // MARK: - Server requests
+
+    private func fetchData(path: String, query: [URLQueryItem] = []) async throws -> (Data, URLResponse) {
+        let urls = [config.serverURL] + (config.fallbackURLs ?? [])
+        var lastError: Error?
+        for url in urls {
+            var components = URLComponents(
+                url: url.appending(path: path),
+                resolvingAgainstBaseURL: false
+            )!
+            components.queryItems = (components.queryItems ?? []) + query
+            var request = URLRequest(url: components.url!)
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue(config.token, forHTTPHeaderField: "X-Plex-Token")
+            request.setValue(Self.clientIdentifier, forHTTPHeaderField: "X-Plex-Client-Identifier")
+            request.setValue(Self.productName, forHTTPHeaderField: "X-Plex-Product")
+            
+            do {
+                let result = try await URLSession.shared.data(for: request)
+                if url != config.serverURL {
+                    config.serverURL = url
+                }
+                return result
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError ?? URLError(.badURL)
+    }
+
+    func libraries() async throws -> [PlexLibrary] {
+        struct Response: Decodable {
+            struct Container: Decodable { let Directory: [PlexLibrary]? }
+            let MediaContainer: Container
+        }
+        let (data, _) = try await fetchData(path: "/library/sections")
+        return try JSONDecoder().decode(Response.self, from: data).MediaContainer.Directory ?? []
+    }
+
+    private struct Tag: Decodable {
+        let id: Int?
+        let tag: String?
+    }
+
+    private struct MediaInfo: Decodable {
+        struct Part: Decodable {
+            let key: String?
+            let container: String?
+            let file: String?
+        }
+        let container: String?
+        let videoCodec: String?
+        let audioCodec: String?
+        let Part: [Part]?
+    }
+
+    private struct Metadata: Decodable {
+        let ratingKey: String
+        let title: String
+        let type: String?
+        let year: Int?
+        let index: Int?
+        let parentIndex: Int?
+        let leafCount: Int?
+        let parentTitle: String?
+        let parentRatingKey: String?
+        let parentThumb: String?
+        let grandparentTitle: String?
+        let grandparentRatingKey: String?
+        let grandparentThumb: String?
+        let thumb: String?
+        let composite: String?
+        let playlistType: String?
+        let summary: String?
+        let originallyAvailableAt: String?
+        let addedAt: Int?
+        let viewCount: Int?
+        let librarySectionID: Int?
+        let Director: [Tag]?
+        let Role: [Tag]?
+        let Collection: [Tag]?
+        let Media: [MediaInfo]?
+    }
+
+    private struct MetadataResponse: Decodable {
+        struct Container: Decodable { let Metadata: [Metadata]? }
+        let MediaContainer: Container
+    }
+
+    /// Plex numeric metadata types for /all queries.
+    private static func plexType(for type: MediaType, tvTopLevel: TVTopLevel, musicTopLevel: MusicTopLevel) -> (query: String, kind: MediaKind) {
+        switch type {
+        case .movies: ("1", .movie)
+        case .tvShows: tvTopLevel == .season ? ("3", .season) : ("2", .show)
+        case .music: musicTopLevel == .artist ? ("8", .artist) : ("9", .album)
+        }
+    }
+
+    func items(inLibrary key: String, type: MediaType, tvTopLevel: TVTopLevel, musicTopLevel: MusicTopLevel) async throws -> [MediaItem] {
+        let (typeQuery, kind) = Self.plexType(for: type, tvTopLevel: tvTopLevel, musicTopLevel: musicTopLevel)
+        let (data, _) = try await fetchData(path: "/library/sections/\(key)/all", query: [URLQueryItem(name: "type", value: typeQuery)])
+        let metadata = try JSONDecoder().decode(MetadataResponse.self, from: data).MediaContainer.Metadata ?? []
+        return metadata.map { entry in
+            MediaItem(
+                id: entry.ratingKey,
+                source: .plex,
+                type: type,
+                kind: kind,
+                // Season top level shows "Show — Season N" context via subtitle.
+                title: entry.title,
+                subtitle: entry.parentTitle ?? entry.grandparentTitle ?? entry.year.map(String.init),
+                posterURL: entry.thumb.map(imageURL(thumbPath:)),
+                streamURL: nil,
+                summary: entry.summary,
+                // For season top-level display, carry parent (show) context so artwork
+                // downloads can place the show poster next to the show folder.
+                parentID: kind == .season ? entry.parentRatingKey : nil,
+                parentKind: kind == .season ? .show : nil,
+                parentTitle: kind == .season ? entry.parentTitle : nil,
+                parentPosterURL: kind == .season ? entry.parentThumb.map(imageURL(thumbPath:)) : nil,
+                attributes: [
+                    "releaseDate": entry.originallyAvailableAt ?? "",
+                    "grandparentTitle": entry.grandparentTitle ?? "",
+                    "originalPath": entry.Media?.first?.Part?.first?.file ?? "",
+                    "year": entry.year.map(String.init) ?? "" // Recoverable offline
+                ],
+                addedAt: entry.addedAt.map { Date(timeIntervalSince1970: TimeInterval($0)) },
+                playCount: entry.viewCount
+            )
+        }
+    }
+
+    /// Direct children of a container: a show's seasons, a season's episodes,
+    /// an album's tracks, or a playlist's mixed items.
+    func children(of item: MediaItem) async throws -> [MediaItem] {
+        // Playlists live outside the library hierarchy.
+        let path = item.kind == .playlist
+            ? "/playlists/\(item.id)/items"
+            : "/library/metadata/\(item.id)/children"
+        let (data, _) = try await fetchData(path: path)
+        let metadata = try JSONDecoder().decode(MetadataResponse.self, from: data).MediaContainer.Metadata ?? []
+        return metadata.compactMap { entry in
+            let kind: MediaKind? = switch entry.type {
+            case "movie": .movie
+            case "season": .season
+            case "episode": .episode
+            case "album": .album
+            case "track": .track
+            default: nil
+            }
+            guard let kind else { return nil }
+            // Playlists mix media types, so derive each child's type.
+            let childType: MediaType = switch kind {
+            case .movie: .movies
+            case .season, .episode: .tvShows
+            case .album, .track: .music
+            default: item.type
+            }
+            let subtitle: String? = switch kind {
+            case .season: entry.leafCount.map { "\($0) episodes" }
+            case .episode: entry.index.map { index in
+                entry.parentIndex.map { "S\($0)E\(index)" } ?? "Episode \(index)"
+            }
+            case .album: entry.year.map(String.init)
+            case .movie: entry.year.map(String.init)
+            default: entry.grandparentTitle
+            }
+            return MediaItem(
+                id: entry.ratingKey,
+                source: .plex,
+                type: childType,
+                kind: kind,
+                title: entry.title,
+                subtitle: subtitle,
+                posterURL: entry.thumb.map(imageURL(thumbPath:)) ?? item.posterURL,
+                streamURL: nil,
+                summary: entry.summary,
+                parentID: item.id,
+                parentKind: item.kind,
+                parentTitle: item.title,
+                // Build parentPosterURL fresh using the current serverURL so it
+                // remains valid even if config.serverURL changed (fallback selected)
+                // since the parent item's posterURL was first constructed.
+                parentPosterURL: entry.parentThumb.map(imageURL(thumbPath:)) ?? item.posterURL,
+                attributes: [
+                    "originalPath": entry.Media?.first?.Part?.first?.file ?? "",
+                    "grandparentTitle": entry.grandparentTitle ?? "",
+                    "parentIndex": entry.parentIndex.map(String.init) ?? "",
+                    "grandparentRatingKey": entry.grandparentRatingKey ?? "",
+                    "grandparentPosterURL": entry.grandparentThumb.map(imageURL(thumbPath:))?.absoluteString ?? "",
+                    "year": entry.year.map(String.init) ?? "" // Recoverable offline
+                ]
+            )
+        }
+    }
+
+    /// The server's playlists (audio and video).
+    func playlists() async throws -> [MediaItem] {
+        let (data, _) = try await fetchData(path: "/playlists")
+        let metadata = try JSONDecoder().decode(MetadataResponse.self, from: data).MediaContainer.Metadata ?? []
+        return metadata.filter { $0.type == "playlist" }.map { entry in
+            MediaItem(
+                id: entry.ratingKey,
+                source: .plex,
+                type: entry.playlistType == "video" ? .movies : .music,
+                kind: .playlist,
+                title: entry.title,
+                subtitle: entry.leafCount.map { "\($0) items" },
+                posterURL: (entry.composite ?? entry.thumb).map(imageURL(thumbPath:)),
+                streamURL: nil,
+                summary: entry.summary
+            )
+        }
+    }
+
+    // MARK: - Deep search
+
+    /// Server-wide search mapped to ancestor chains (artist → album → track,
+    /// show → season → episode) per the configured top levels.
+    func deepSearch(_ query: String, type: MediaType, tvTopLevel: TVTopLevel, musicTopLevel: MusicTopLevel) async throws -> [[MediaItem]] {
+        let (data, _) = try await fetchData(
+            path: "/search",
+            query: [URLQueryItem(name: "query", value: query)]
+        )
+        let metadata = try JSONDecoder().decode(MetadataResponse.self, from: data).MediaContainer.Metadata ?? []
+
+        func ancestor(key: String?, title: String?, thumb: String?, kind: MediaKind, type: MediaType, parent: MediaItem? = nil) -> MediaItem? {
+            guard let key, let title else { return nil }
+            return MediaItem(
+                id: key,
+                source: .plex,
+                type: type,
+                kind: kind,
+                title: title,
+                posterURL: thumb.map(imageURL(thumbPath:)),
+                parentID: parent?.id,
+                parentKind: parent?.kind
+            )
+        }
+
+        return metadata.compactMap { entry -> [MediaItem]? in
+            switch (entry.type, type) {
+            case ("movie", .movies):
+                return [movieItem(from: entry)]
+            case ("show", .tvShows) where tvTopLevel == .series:
+                return ancestor(key: entry.ratingKey, title: entry.title, thumb: entry.thumb, kind: .show, type: .tvShows).map { [$0] }
+            case ("season", .tvShows):
+                let show = tvTopLevel == .series
+                    ? ancestor(key: entry.parentRatingKey, title: entry.parentTitle, thumb: entry.parentThumb, kind: .show, type: .tvShows)
+                    : nil
+                guard let season = ancestor(key: entry.ratingKey, title: entry.title, thumb: entry.thumb, kind: .season, type: .tvShows, parent: show) else { return nil }
+                return (show.map { [$0] } ?? []) + [season]
+            case ("episode", .tvShows):
+                let show = tvTopLevel == .series
+                    ? ancestor(key: entry.grandparentRatingKey, title: entry.grandparentTitle, thumb: entry.grandparentThumb, kind: .show, type: .tvShows)
+                    : nil
+                guard let season = ancestor(key: entry.parentRatingKey, title: entry.parentTitle, thumb: entry.parentThumb ?? entry.grandparentThumb, kind: .season, type: .tvShows, parent: show),
+                      let episode = ancestor(key: entry.ratingKey, title: entry.title, thumb: entry.thumb, kind: .episode, type: .tvShows, parent: season) else { return nil }
+                return (show.map { [$0] } ?? []) + [season, episode]
+            case ("artist", .music) where musicTopLevel == .artist:
+                return ancestor(key: entry.ratingKey, title: entry.title, thumb: entry.thumb, kind: .artist, type: .music).map { [$0] }
+            case ("album", .music):
+                let artist = musicTopLevel == .artist
+                    ? ancestor(key: entry.parentRatingKey, title: entry.parentTitle, thumb: entry.parentThumb, kind: .artist, type: .music)
+                    : nil
+                guard let album = ancestor(key: entry.ratingKey, title: entry.title, thumb: entry.thumb, kind: .album, type: .music, parent: artist) else { return nil }
+                return (artist.map { [$0] } ?? []) + [album]
+            case ("track", .music):
+                let artist = musicTopLevel == .artist
+                    ? ancestor(key: entry.grandparentRatingKey, title: entry.grandparentTitle, thumb: entry.grandparentThumb, kind: .artist, type: .music)
+                    : nil
+                guard let album = ancestor(key: entry.parentRatingKey, title: entry.parentTitle, thumb: entry.parentThumb ?? entry.grandparentThumb, kind: .album, type: .music, parent: artist),
+                      let track = ancestor(key: entry.ratingKey, title: entry.title, thumb: entry.thumb, kind: .track, type: .music, parent: album) else { return nil }
+                return (artist.map { [$0] } ?? []) + [album, track]
+            default:
+                return nil
+            }
+        }
+    }
+
+    // MARK: - Auto-continue queries
+
+    private func metadata(forRatingKey key: String) async throws -> Metadata? {
+        let (data, _) = try await fetchData(path: "/library/metadata/\(key)")
+        return try JSONDecoder().decode(MetadataResponse.self, from: data).MediaContainer.Metadata?.first
+    }
+
+    private func movieItem(from entry: Metadata) -> MediaItem {
+        MediaItem(
+            id: entry.ratingKey,
+            source: .plex,
+            type: .movies,
+            kind: .movie,
+            title: entry.title,
+            subtitle: entry.year.map(String.init),
+            posterURL: entry.thumb.map(imageURL(thumbPath:)),
+            streamURL: nil,
+            summary: entry.summary,
+            attributes: [
+                "releaseDate": entry.originallyAvailableAt ?? "",
+                "originalPath": entry.Media?.first?.Part?.first?.file ?? "",
+                "year": entry.year.map(String.init) ?? "" // Recoverable offline
+            ]
+        )
+    }
+
+    /// Movies matching a library filter (collection/director/actor tag),
+    /// sorted by release date.
+    private func movies(inSection section: Int, filter: URLQueryItem) async throws -> [MediaItem] {
+        let (data, _) = try await fetchData(
+            path: "/library/sections/\(section)/all",
+            query: [URLQueryItem(name: "type", value: "1"), filter]
+        )
+        let metadata = try JSONDecoder().decode(MetadataResponse.self, from: data).MediaContainer.Metadata ?? []
+        return metadata.map(movieItem(from:))
+            .sorted { ($0.attributes["releaseDate"] ?? "") < ($1.attributes["releaseDate"] ?? "") }
+    }
+
+    /// Picks the next movie per the criterion, using the item's full
+    /// metadata (collections, director, cast) and library-wide tag filters.
+    func nextMovie(after item: MediaItem, by criterion: MovieAutoContinue) async throws -> MediaItem? {
+        guard criterion != .off,
+              let meta = try await metadata(forRatingKey: item.id),
+              let section = meta.librarySectionID else {
+            return nil
+        }
+        let currentDate = meta.originallyAvailableAt ?? ""
+
+        var candidates: [MediaItem] = []
+        switch criterion {
+        case .off:
+            return nil
+        case .inSequence:
+            if let collection = meta.Collection?.first?.id {
+                candidates = try await movies(inSection: section, filter: URLQueryItem(name: "collection", value: String(collection)))
+            } else {
+                // No Plex collection — fall back to the franchise title heuristic.
+                let all = try await movies(inSection: section, filter: URLQueryItem(name: "sort", value: "titleSort"))
+                let base = franchiseBaseTitle(item.title)
+                candidates = all.filter { franchiseBaseTitle($0.title) == base }
+            }
+        case .byDirector:
+            guard let director = meta.Director?.first?.id else { return nil }
+            candidates = try await movies(inSection: section, filter: URLQueryItem(name: "director", value: String(director)))
+        case .byLeadActor:
+            guard let actor = meta.Role?.first?.id else { return nil }
+            candidates = try await movies(inSection: section, filter: URLQueryItem(name: "actor", value: String(actor)))
+        }
+
+        candidates.removeAll { $0.id == item.id }
+        return candidates.first { ($0.attributes["releaseDate"] ?? "") > currentDate } ?? candidates.first
+    }
+
+    /// A random other track by the same artist (via the track's grandparent).
+    func randomTrack(sameArtistAs item: MediaItem) async throws -> MediaItem? {
+        guard let meta = try await metadata(forRatingKey: item.id),
+              let artistKey = meta.grandparentRatingKey else {
+            return nil
+        }
+        let (data, _) = try await fetchData(path: "/library/metadata/\(artistKey)/allLeaves")
+        let tracks = try JSONDecoder().decode(MetadataResponse.self, from: data).MediaContainer.Metadata ?? []
+        guard let pick = tracks.filter({ $0.ratingKey != item.id }).randomElement() else { return nil }
+        return MediaItem(
+            id: pick.ratingKey,
+            source: .plex,
+            type: .music,
+            kind: .track,
+            title: pick.title,
+            subtitle: pick.grandparentTitle,
+            posterURL: pick.thumb.map(imageURL(thumbPath:)) ?? item.posterURL,
+            streamURL: nil,
+            summary: pick.summary
+        )
+    }
+
+    /// Poster art scaled server-side by Plex's photo transcoder.
+    func imageURL(thumbPath: String) -> URL {
+        var components = URLComponents(
+            url: config.serverURL.appending(path: "/photo/:/transcode"),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [
+            URLQueryItem(name: "width", value: "400"),
+            URLQueryItem(name: "height", value: "600"),
+            URLQueryItem(name: "minSize", value: "1"),
+            URLQueryItem(name: "url", value: thumbPath),
+            URLQueryItem(name: "X-Plex-Token", value: config.token),
+        ]
+        return components.url!
+    }
+
+    // MARK: - Playback
+
+    /// AVFoundation has no software AV1 decoder; Apple silicon gained the
+    /// hardware decoder with the M3 generation. VideoToolbox answers the
+    /// "is this an M3 or newer" question directly, without parsing chip names.
+    static let supportsAV1 = VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)
+
+    private static let directPlayVideoCodecs: Set<String> = {
+        var codecs: Set<String> = ["h264", "hevc", "h265", "mpeg4"]
+        if supportsAV1 { codecs.insert("av1") }
+        return codecs
+    }()
+    private static let directPlayAudioCodecs: Set<String> = ["aac", "mp3", "ac3", "eac3", "alac", "flac", "pcm"]
+    /// Containers AVFoundation can stream over HTTP — notably not mkv.
+    private static let directPlayVideoContainers: Set<String> = ["mp4", "mov", "m4v"]
+    private static let directPlayAudioContainers: Set<String> = ["mp3", "mp4", "m4a", "flac", "aiff", "wav", "caf"]
+
+    /// Original-file download URL: resolves the part key from metadata and
+    /// appends `download=1` so the server treats it as an attachment.
+    func downloadFileURL(ratingKey: String) async -> URL? {
+        guard let media = (try? await metadata(forRatingKey: ratingKey))?.Media?.first,
+              let part = media.Part?.first,
+              let partKey = part.key else { return nil }
+        var components = URLComponents(
+            url: config.serverURL.appending(path: partKey),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = (components.queryItems ?? []) + [
+            URLQueryItem(name: "download", value: "1"),
+            URLQueryItem(name: "X-Plex-Token", value: config.token),
+        ]
+        return components.url
+    }
+
+    /// The original file, streamed as-is with no server-side processing.
+    private func directFileURL(partKey: String) -> URL {
+        var components = URLComponents(
+            url: config.serverURL.appending(path: partKey),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = (components.queryItems ?? []) + [
+            URLQueryItem(name: "X-Plex-Token", value: config.token),
+        ]
+        return components.url!
+    }
+
+    /// Direct-plays the original video file when AVFoundation can handle its
+    /// container and codecs (AV1 needs the M3-or-newer hardware decoder);
+    /// anything else falls back to the universal HLS stream, where the server
+    /// remuxes compatible codecs and only transcodes what it must.
+    func videoStreamURL(ratingKey: String) async -> URL {
+        if let media = (try? await metadata(forRatingKey: ratingKey))?.Media?.first,
+           let part = media.Part?.first, let partKey = part.key,
+           Self.directPlayVideoContainers.contains((part.container ?? media.container ?? "").lowercased()),
+           Self.directPlayVideoCodecs.contains((media.videoCodec ?? "").lowercased()),
+           Self.directPlayAudioCodecs.contains((media.audioCodec ?? "").lowercased()) {
+            return directFileURL(partKey: partKey)
+        }
+        return hlsStreamURL(ratingKey: ratingKey)
+    }
+
+    /// Same decision for music: direct-play the original track unless its
+    /// container/codec needs the server's MP3 fallback.
+    func trackStreamURL(ratingKey: String) async -> URL {
+        if let media = (try? await metadata(forRatingKey: ratingKey))?.Media?.first,
+           let part = media.Part?.first, let partKey = part.key,
+           Self.directPlayAudioContainers.contains((part.container ?? media.container ?? "").lowercased()),
+           Self.directPlayAudioCodecs.contains((media.audioCodec ?? "").lowercased()) {
+            return directFileURL(partKey: partKey)
+        }
+        return audioStreamURL(ratingKey: ratingKey)
+    }
+
+    /// URLComponents.queryItems leaves "&" in values unescaped, which would
+    /// splinter the client-profile directives below into bogus query params,
+    /// so the query is percent-encoded by hand.
+    private static let queryValueAllowed: CharacterSet = {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&+=?")
+        return allowed
+    }()
+
+    private static func encodedQuery(_ items: [URLQueryItem]) -> String {
+        items.map { item in
+            let name = item.name.addingPercentEncoding(withAllowedCharacters: queryValueAllowed) ?? item.name
+            let value = (item.value ?? "").addingPercentEncoding(withAllowedCharacters: queryValueAllowed) ?? ""
+            return "\(name)=\(value)"
+        }
+        .joined(separator: "&")
+    }
+
+    /// Universal HLS stream for files that can't direct-play (e.g. mkv).
+    /// directStream lets the server remux compatible video/audio without
+    /// re-encoding; codecs outside the advertised profile get transcoded
+    /// to H.264/AAC.
+    func hlsStreamURL(ratingKey: String) -> URL {
+        var components = URLComponents(
+            url: config.serverURL.appending(path: "/video/:/transcode/universal/start.m3u8"),
+            resolvingAgainstBaseURL: false
+        )!
+        let session = UUID().uuidString
+        var videoCodecs = "h264,hevc"
+        if Self.supportsAV1 { videoCodecs += ",av1" }
+        components.percentEncodedQuery = Self.encodedQuery([
+            URLQueryItem(name: "path", value: "/library/metadata/\(ratingKey)"),
+            URLQueryItem(name: "mediaIndex", value: "0"),
+            URLQueryItem(name: "partIndex", value: "0"),
+            URLQueryItem(name: "protocol", value: "hls"),
+            URLQueryItem(name: "fastSeek", value: "1"),
+            URLQueryItem(name: "hasMDE", value: "1"),
+            URLQueryItem(name: "directPlay", value: "0"),
+            URLQueryItem(name: "directStream", value: "1"),
+            URLQueryItem(name: "directStreamAudio", value: "1"),
+            URLQueryItem(name: "videoQuality", value: "100"),
+            URLQueryItem(name: "videoResolution", value: "4096x2160"),
+            URLQueryItem(name: "maxVideoBitrate", value: "200000"),
+            URLQueryItem(name: "subtitles", value: "burn"),
+            URLQueryItem(name: "session", value: session),
+            URLQueryItem(name: "X-Plex-Session-Identifier", value: session),
+            URLQueryItem(
+                name: "X-Plex-Client-Profile-Extra",
+                // fMP4 segments (container=mp4): AVFoundation only renders
+                // HEVC/AV1 video in HLS from fMP4, not mpegts — with mpegts
+                // the audio plays but the video track never appears.
+                value: "add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=mp4&videoCodec=\(videoCodecs)&audioCodec=aac,mp3)"
+            ),
+            // "Generic" matches a stock server client profile; unknown platform
+            // names (e.g. "macOS") make the transcoder 400 the whole request.
+            URLQueryItem(name: "X-Plex-Platform", value: "Generic"),
+            URLQueryItem(name: "X-Plex-Device", value: "Mac"),
+            URLQueryItem(name: "X-Plex-Product", value: Self.productName),
+            URLQueryItem(name: "X-Plex-Token", value: config.token),
+            URLQueryItem(name: "X-Plex-Client-Identifier", value: Self.clientIdentifier),
+        ])
+        return components.url!
+    }
+
+    /// Universal audio transcode to MP3, the fallback for track codecs
+    /// AVFoundation can't play. The explicit music transcode target tells
+    /// the server what to produce — without it, an unrecognized client
+    /// gets an error instead of a stream.
+    func audioStreamURL(ratingKey: String) -> URL {
+        var components = URLComponents(
+            url: config.serverURL.appending(path: "/music/:/transcode/universal/start.mp3"),
+            resolvingAgainstBaseURL: false
+        )!
+        let session = UUID().uuidString
+        components.percentEncodedQuery = Self.encodedQuery([
+            URLQueryItem(name: "path", value: "/library/metadata/\(ratingKey)"),
+            URLQueryItem(name: "mediaIndex", value: "0"),
+            URLQueryItem(name: "partIndex", value: "0"),
+            URLQueryItem(name: "protocol", value: "http"),
+            URLQueryItem(name: "hasMDE", value: "1"),
+            URLQueryItem(name: "directPlay", value: "0"),
+            URLQueryItem(name: "directStream", value: "0"),
+            URLQueryItem(name: "session", value: session),
+            URLQueryItem(name: "X-Plex-Session-Identifier", value: session),
+            URLQueryItem(
+                name: "X-Plex-Client-Profile-Extra",
+                value: "add-transcode-target(type=musicProfile&context=streaming&protocol=http&container=mp3&audioCodec=mp3)"
+            ),
+            // Same profile-name requirement as the video transcoder above.
+            URLQueryItem(name: "X-Plex-Platform", value: "Generic"),
+            URLQueryItem(name: "X-Plex-Product", value: Self.productName),
+            URLQueryItem(name: "X-Plex-Token", value: config.token),
+            URLQueryItem(name: "X-Plex-Client-Identifier", value: Self.clientIdentifier),
+        ])
+        return components.url!
+    }
+
+    /// Reports playback position so on-deck/resume state stays in sync.
+    func reportTimeline(ratingKey: String, state: PlaybackState, positionSeconds: Double, durationSeconds: Double) async throws {
+        let stateValue = switch state {
+        case .started, .playing: "playing"
+        case .paused: "paused"
+        case .stopped: "stopped"
+        }
+        let query = [
+            URLQueryItem(name: "ratingKey", value: ratingKey),
+            URLQueryItem(name: "key", value: "/library/metadata/\(ratingKey)"),
+            URLQueryItem(name: "state", value: stateValue),
+            URLQueryItem(name: "time", value: String(Int(positionSeconds * 1000))),
+            URLQueryItem(name: "duration", value: String(Int(durationSeconds * 1000))),
+        ]
+        _ = try await fetchData(path: "/:/timeline", query: query)
+    }
+
+    // MARK: - plex.tv PIN link flow
+
+    struct PIN: Decodable {
+        let id: Int
+        let code: String
+        let authToken: String?
+    }
+
+    private static func plexTVRequest(path: String, method: String) -> URLRequest {
+        var request = URLRequest(url: URL(string: "https://plex.tv\(path)")!)
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(clientIdentifier, forHTTPHeaderField: "X-Plex-Client-Identifier")
+        request.setValue(productName, forHTTPHeaderField: "X-Plex-Product")
+        return request
+    }
+
+    /// Step 1: create a PIN. The user enters its code at https://plex.tv/link.
+    /// Non-strong pins are the short 4-character codes that page expects
+    /// (strong pins are long codes for the app.plex.tv/auth OAuth flow).
+    static func requestPIN() async throws -> PIN {
+        let (data, _) = try await URLSession.shared.data(
+            for: plexTVRequest(path: "/api/v2/pins", method: "POST")
+        )
+        return try JSONDecoder().decode(PIN.self, from: data)
+    }
+
+    /// Step 2: poll until `authToken` is non-nil, meaning the PIN was linked.
+    static func checkPIN(id: Int) async throws -> PIN {
+        let (data, _) = try await URLSession.shared.data(
+            for: plexTVRequest(path: "/api/v2/pins/\(id)", method: "GET")
+        )
+        return try JSONDecoder().decode(PIN.self, from: data)
+    }
+
+    /// Lists servers visible to a plex.tv account token. Each resource
+    /// carries its own access token (the right token for shared servers),
+    /// so discovered servers can be connected without any manual entry.
+    /// Prefers a local connection when available.
+    static func discoverServers(accountToken: String) async throws -> [PlexDiscoveredServer] {
+        struct Resource: Decodable {
+            struct Connection: Decodable {
+                let uri: String
+                let local: Bool
+                let address: String
+                let port: Int
+                let networkProtocol: String
+                let relay: Bool
+
+                enum CodingKeys: String, CodingKey {
+                    case uri, local, address, port, relay
+                    case networkProtocol = "protocol"
+                }
+
+                init(from decoder: Decoder) throws {
+                    let c = try decoder.container(keyedBy: CodingKeys.self)
+                    uri = try c.decode(String.self, forKey: .uri)
+                    local = try c.decode(Bool.self, forKey: .local)
+                    address = try c.decode(String.self, forKey: .address)
+                    port = try c.decode(Int.self, forKey: .port)
+                    networkProtocol = try c.decode(String.self, forKey: .networkProtocol)
+                    relay = try c.decodeIfPresent(Bool.self, forKey: .relay) ?? false
+                }
+            }
+            let name: String
+            let provides: String
+            let clientIdentifier: String
+            let accessToken: String?
+            let connections: [Connection]?
+        }
+        var request = plexTVRequest(path: "/api/v2/resources?includeHttps=1", method: "GET")
+        request.setValue(accountToken, forHTTPHeaderField: "X-Plex-Token")
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let resources = try JSONDecoder().decode([Resource].self, from: data)
+        return resources
+            .filter { $0.provides.contains("server") }
+            .compactMap { resource in
+                // Sort: local non-relay first, then remote non-relay, then relay last.
+                let sorted = (resource.connections ?? []).sorted {
+                    if $0.local != $1.local { return $0.local }
+                    if $0.relay != $1.relay { return !$0.relay }
+                    return false
+                }
+                // For each connection emit the direct-IP URL before the plex.direct URI
+                // so that local plain-HTTP connections are tried first and relay last.
+                // Always add both http and https direct-IP variants so the app works
+                // regardless of the server's "Secure connections" setting.
+                var seen = Set<String>()
+                var validURLs: [URL] = []
+                for connection in sorted {
+                    if !connection.relay, !connection.address.isEmpty {
+                        for scheme in ["http", "https"] {
+                            if let url = URL(string: "\(scheme)://\(connection.address):\(connection.port)"),
+                               seen.insert(url.absoluteString).inserted {
+                                validURLs.append(url)
+                            }
+                        }
+                    }
+                    if let uriURL = URL(string: connection.uri),
+                       seen.insert(uriURL.absoluteString).inserted {
+                        validURLs.append(uriURL)
+                    }
+                }
+                guard !validURLs.isEmpty else { return nil }
+                return PlexDiscoveredServer(
+                    clientIdentifier: resource.clientIdentifier,
+                    name: resource.name,
+                    connections: validURLs,
+                    accessToken: resource.accessToken
+                )
+            }
+    }
+}
+
+/// A server reachable by the signed-in plex.tv account, as reported by
+/// /api/v2/resources.
+struct PlexDiscoveredServer: Identifiable, Hashable {
+    let clientIdentifier: String
+    let name: String
+    let connections: [URL]
+    let accessToken: String?
+
+    var id: String { clientIdentifier }
+}
+
+/// MediaProvider backed by a real Plex server, restricted to the libraries
+/// selected in Settings (or all libraries when none are selected).
+struct PlexMediaProvider: MediaProvider {
+    let client: PlexClient
+    let selectedLibraryKeys: Set<String>
+    var tvTopLevel: TVTopLevel = .series
+    var musicTopLevel: MusicTopLevel = .album
+
+    var source: MediaSource { .plex }
+
+    var serverID: String { client.config.serverID }
+
+    /// Attribute key carrying the originating server's ID, so AppState can
+    /// route an item back to the right provider when several Plex servers
+    /// are connected.
+    static let serverIDAttribute = "plexServerID"
+
+    private func tagged(_ item: MediaItem) -> MediaItem {
+        var item = item
+        item.attributes[Self.serverIDAttribute] = serverID
+        return item
+    }
+
+    func items(for type: MediaType) async throws -> [MediaItem] {
+        let libraries = try await client.libraries().filter { library in
+            library.mediaType == type
+                && (selectedLibraryKeys.isEmpty || selectedLibraryKeys.contains(library.key))
+        }
+        var all: [MediaItem] = []
+        for library in libraries {
+            all += try await client.items(
+                inLibrary: library.key,
+                type: type,
+                tvTopLevel: tvTopLevel,
+                musicTopLevel: musicTopLevel
+            )
+        }
+        return all.map(tagged)
+    }
+
+    func children(of item: MediaItem) async throws -> [MediaItem] {
+        try await client.children(of: item).map(tagged)
+    }
+
+    func playlists() async throws -> [MediaItem] {
+        try await client.playlists().map(tagged)
+    }
+
+    func deepSearch(_ query: String, type: MediaType) async throws -> [[MediaItem]] {
+        try await client.deepSearch(query, type: type, tvTopLevel: tvTopLevel, musicTopLevel: musicTopLevel)
+            .map { $0.map(tagged) }
+    }
+
+    func streamURL(for item: MediaItem) async throws -> URL {
+        if let direct = item.streamURL { return direct }
+        return item.kind == .track
+            ? await client.trackStreamURL(ratingKey: item.id)
+            : await client.videoStreamURL(ratingKey: item.id)
+    }
+
+    func downloadURL(for item: MediaItem) async throws -> URL {
+        guard let url = await client.downloadFileURL(ratingKey: item.id) else {
+            throw URLError(.badURL)
+        }
+        return url
+    }
+
+    func nextMovie(after item: MediaItem, by criterion: MovieAutoContinue) async throws -> MediaItem? {
+        try await client.nextMovie(after: item, by: criterion).map(tagged)
+    }
+
+    func randomTrack(sameArtistAs item: MediaItem) async throws -> MediaItem? {
+        try await client.randomTrack(sameArtistAs: item).map(tagged)
+    }
+}
+#endif // os(macOS)

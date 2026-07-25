@@ -1,0 +1,1248 @@
+import Foundation
+import Observation
+import AVFoundation
+import MediaPlayer
+#if os(macOS)
+import AppKit
+#endif
+
+/// Shared app state managing UI sections, drill-down paths, and catalogs.
+/// Merges Plex, Jellyfin, or a built-in sample fallback.
+@MainActor
+@Observable
+final class AppState {
+    var itemsBySection: [MenuSection: [MediaItem]] = [:]
+    var loadingSections: Set<MenuSection> = []
+    var errorsBySection: [MenuSection: String] = [:]
+    var expandedSection: MenuSection?
+    var searchText = ""
+    /// While active, every section is expanded and filtered live.
+    var isSearchActive = false
+
+    /// Drill-down hierarchy per section (e.g., [show, season]). Each gets a child carousel.
+    var drillPath: [MenuSection: [MediaItem]] = [:]
+    var childrenByItemID: [String: [MediaItem]] = [:]
+    var loadingChildrenIDs: Set<String> = []
+    var childErrorsByItemID: [String: String] = [:]
+
+    init() {
+        setupMediaKeys()
+        
+        Task {
+            if providers.isEmpty {
+                UserDefaults.standard.set("accounts", forKey: "selectedSettingsTab")
+#if os(macOS)
+                NSApplication.shared.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+#endif
+            }
+        }
+    }
+
+    private func setupMediaKeys() {
+        let center = MPRemoteCommandCenter.shared()
+        center.playCommand.addTarget { [weak self] _ in
+            guard let self = self, UserDefaults.standard.bool(forKey: SettingsKeys.useMediaKeys) else { return .commandFailed }
+            Task { @MainActor in self.togglePlayPause() }
+            return .success
+        }
+        center.pauseCommand.addTarget { [weak self] _ in
+            guard let self = self, UserDefaults.standard.bool(forKey: SettingsKeys.useMediaKeys) else { return .commandFailed }
+            Task { @MainActor in self.togglePlayPause() }
+            return .success
+        }
+        center.togglePlayPauseCommand.addTarget { [weak self] _ in
+            guard let self = self, UserDefaults.standard.bool(forKey: SettingsKeys.useMediaKeys) else { return .commandFailed }
+            Task { @MainActor in self.togglePlayPause() }
+            return .success
+        }
+        center.nextTrackCommand.addTarget { [weak self] _ in
+            guard let self = self, UserDefaults.standard.bool(forKey: SettingsKeys.useMediaKeys) else { return .commandFailed }
+            Task { @MainActor in
+                if self.inlinePlaylist != nil {
+                    self.playInlineNeighbor(1)
+                } else {
+                    NotificationCenter.default.post(name: NSNotification.Name("QP.MediaKeyNext"), object: nil)
+                }
+            }
+            return .success
+        }
+        center.previousTrackCommand.addTarget { [weak self] _ in
+            guard let self = self, UserDefaults.standard.bool(forKey: SettingsKeys.useMediaKeys) else { return .commandFailed }
+            Task { @MainActor in
+                if self.inlinePlaylist != nil {
+                    self.playInlineNeighbor(-1)
+                } else {
+                    NotificationCenter.default.post(name: NSNotification.Name("QP.MediaKeyPrevious"), object: nil)
+                }
+            }
+            return .success
+        }
+    }
+
+    /// Short label for the dropdown header, e.g. "Plex + Jellyfin".
+    var sourcesDescription: String {
+        if isOfflineMode { return "Offline" }
+        var names: [String] = []
+        if !plexConfigurations.isEmpty { names.append("Plex") }
+        if jellyfinConfiguration != nil { names.append("Jellyfin") }
+        return names.isEmpty ? "Sample catalog" : names.joined(separator: " + ")
+    }
+
+    // MARK: - Backend configuration
+
+    /// One configuration per connected server that has a usable URL and
+    /// token; their catalogs are merged.
+    var plexConfigurations: [PlexConfiguration] {
+        PlexServerStore.load().compactMap { server in
+            guard let url = URL(string: server.urlString),
+                  let token = PlexServerStore.token(for: server.id), !token.isEmpty else {
+                return nil
+            }
+            return PlexConfiguration(
+                serverURL: url,
+                fallbackURLs: server.fallbackURLStrings?.compactMap(URL.init(string:)),
+                token: token,
+                serverID: server.id,
+                serverName: server.name
+            )
+        }
+    }
+
+    var jellyfinConfiguration: JellyfinConfiguration? {
+        let defaults = UserDefaults.standard
+        guard let urlString = defaults.string(forKey: SettingsKeys.jellyfinServerURL),
+              !urlString.isEmpty,
+              let url = URL(string: urlString),
+              let userID = defaults.string(forKey: SettingsKeys.jellyfinUserID), !userID.isEmpty,
+              let token = KeychainStore.string(for: KeychainKeys.jellyfinToken), !token.isEmpty else {
+            return nil
+        }
+        return JellyfinConfiguration(serverURL: url, token: token, userID: userID)
+    }
+
+    private func selectedLibraries(forKey key: String) -> Set<String> {
+        let stored = UserDefaults.standard.string(forKey: key) ?? ""
+        return Set(stored.split(separator: ",").map(String.init))
+    }
+
+    /// Plex library selections are stored scoped as "serverID:libraryKey"
+    /// (keys alone collide across servers); each provider gets its own
+    /// entries with the prefix stripped.
+    private func selectedPlexLibraries(forServer serverID: String) -> Set<String> {
+        Set(selectedLibraries(forKey: SettingsKeys.plexSelectedLibraries).compactMap { entry in
+            let parts = entry.split(separator: ":", maxSplits: 1)
+            guard parts.count == 2, parts[0] == serverID else { return nil }
+            return String(parts[1])
+        })
+    }
+
+    // MARK: - Preferences
+
+    var tvTopLevel: TVTopLevel {
+        UserDefaults.standard.string(forKey: SettingsKeys.tvTopLevel).flatMap(TVTopLevel.init) ?? .series
+    }
+
+    var musicTopLevel: MusicTopLevel {
+        UserDefaults.standard.string(forKey: SettingsKeys.musicTopLevel).flatMap(MusicTopLevel.init) ?? .album
+    }
+
+    var movieAutoContinue: MovieAutoContinue {
+        UserDefaults.standard.string(forKey: SettingsKeys.movieAutoContinue).flatMap(MovieAutoContinue.init) ?? .off
+    }
+
+    var tvAutoContinue: Bool {
+        UserDefaults.standard.bool(forKey: SettingsKeys.tvAutoContinue)
+    }
+
+    var musicAutoContinue: MusicAutoContinue {
+        UserDefaults.standard.string(forKey: SettingsKeys.musicAutoContinue).flatMap(MusicAutoContinue.init) ?? .off
+    }
+
+    var continueMusicGrouping: ContinueMusicGrouping {
+        UserDefaults.standard.string(forKey: SettingsKeys.continueMusic).flatMap(ContinueMusicGrouping.init) ?? .byAlbumPlaylist
+    }
+
+    // Sort preferences are stored (not UserDefaults-computed) so @Observable
+    // can track changes and re-render displayedItems reactively without a catalog reload.
+    var movieSortRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.movieSort) ?? MovieSort.byTitle.rawValue {
+        didSet { UserDefaults.standard.set(movieSortRaw, forKey: SettingsKeys.movieSort) }
+    }
+    var movieSortDirectionRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.movieSortDirection) ?? SortDirection.ascending.rawValue {
+        didSet { UserDefaults.standard.set(movieSortDirectionRaw, forKey: SettingsKeys.movieSortDirection) }
+    }
+    var tvSortRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.tvSort) ?? TVSort.byTitle.rawValue {
+        didSet { UserDefaults.standard.set(tvSortRaw, forKey: SettingsKeys.tvSort) }
+    }
+    var tvSortDirectionRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.tvSortDirection) ?? SortDirection.ascending.rawValue {
+        didSet { UserDefaults.standard.set(tvSortDirectionRaw, forKey: SettingsKeys.tvSortDirection) }
+    }
+    var musicSortRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.musicSort) ?? MusicSort.byTitle.rawValue {
+        didSet { UserDefaults.standard.set(musicSortRaw, forKey: SettingsKeys.musicSort) }
+    }
+    var musicSortDirectionRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.musicSortDirection) ?? SortDirection.ascending.rawValue {
+        didSet { UserDefaults.standard.set(musicSortDirectionRaw, forKey: SettingsKeys.musicSortDirection) }
+    }
+    var movieLocalFirst: Bool = UserDefaults.standard.bool(forKey: SettingsKeys.movieLocalFirst) {
+        didSet { UserDefaults.standard.set(movieLocalFirst, forKey: SettingsKeys.movieLocalFirst) }
+    }
+    var tvLocalFirst: Bool = UserDefaults.standard.bool(forKey: SettingsKeys.tvLocalFirst) {
+        didSet { UserDefaults.standard.set(tvLocalFirst, forKey: SettingsKeys.tvLocalFirst) }
+    }
+    var musicLocalFirst: Bool = UserDefaults.standard.bool(forKey: SettingsKeys.musicLocalFirst) {
+        didSet { UserDefaults.standard.set(musicLocalFirst, forKey: SettingsKeys.musicLocalFirst) }
+    }
+
+    /// Session-only flag — not persisted. Hides all remote providers when true.
+    var isOfflineMode: Bool = false {
+        didSet {
+            resetCatalog()
+            if isSearchActive {
+                for section in enabledSections { Task { await load(section, force: true) } }
+            } else if let section = expandedSection {
+                Task { await load(section, force: true) }
+            }
+        }
+    }
+
+    private var movieSort: MovieSort { MovieSort(rawValue: movieSortRaw) ?? .byTitle }
+    private var movieSortDirection: SortDirection { SortDirection(rawValue: movieSortDirectionRaw) ?? .ascending }
+    private var tvSort: TVSort { TVSort(rawValue: tvSortRaw) ?? .byTitle }
+    private var tvSortDirection: SortDirection { SortDirection(rawValue: tvSortDirectionRaw) ?? .ascending }
+    private var musicSort: MusicSort { MusicSort(rawValue: musicSortRaw) ?? .byTitle }
+    private var musicSortDirection: SortDirection { SortDirection(rawValue: musicSortDirectionRaw) ?? .ascending }
+
+    /// The sections shown in the dropdown, per the Preferences toggles.
+    var enabledSections: [MenuSection] {
+        MenuSection.allCases.filter { section in
+            if section == .continueItems && !isOfflineMode && plexConfigurations.isEmpty && jellyfinConfiguration == nil {
+                return false
+            }
+            let key = SettingsKeys.sectionEnabled(section)
+            guard UserDefaults.standard.object(forKey: key) != nil else {
+                return section.enabledByDefault
+            }
+            return UserDefaults.standard.bool(forKey: key)
+        }
+    }
+
+    private var providers: [any MediaProvider] {
+        if isOfflineMode {
+            let local = LocalMediaProvider(tvTopLevel: tvTopLevel, musicTopLevel: musicTopLevel)
+            return local.hasContent ? [local] : []
+        }
+        var result: [any MediaProvider] = []
+        for configuration in plexConfigurations {
+            result.append(PlexMediaProvider(
+                client: PlexClient(config: configuration),
+                selectedLibraryKeys: selectedPlexLibraries(forServer: configuration.serverID),
+                tvTopLevel: tvTopLevel,
+                musicTopLevel: musicTopLevel
+            ))
+        }
+        if let configuration = jellyfinConfiguration {
+            result.append(JellyfinMediaProvider(
+                client: JellyfinClient(config: configuration),
+                selectedLibraryIDs: selectedLibraries(forKey: SettingsKeys.jellyfinSelectedLibraries),
+                tvTopLevel: tvTopLevel,
+                musicTopLevel: musicTopLevel
+            ))
+        }
+        // Local provider runs last so de-duplication in load() can filter its
+        // items against server results (server poster wins when both exist).
+        let local = LocalMediaProvider(tvTopLevel: tvTopLevel, musicTopLevel: musicTopLevel)
+        if local.hasContent {
+            result.append(local)
+        }
+        return result
+    }
+
+    /// Resolves an item's provider using its server ID, or falls back to the first matching source.
+    private func provider(for item: MediaItem) -> (any MediaProvider)? {
+        let candidates = providers.filter { $0.source == item.source }
+        if item.source == .plex,
+           let serverID = item.attributes[PlexMediaProvider.serverIDAttribute],
+           let match = candidates.first(where: { ($0 as? PlexMediaProvider)?.serverID == serverID }) {
+            return match
+        }
+        return candidates.first
+    }
+
+    // MARK: - Catalog
+
+    func toggleExpansion(of section: MenuSection) {
+        expandedSection = expandedSection == section ? nil : section
+        if expandedSection == section {
+            Task { await load(section) }
+        }
+    }
+
+    /// The Continue… items to display. In `.byAlbumPlaylist` mode, in-progress
+    /// music tracks collapse into their parent album/playlist cell (deduped,
+    /// most-recent first); everything else passes through unchanged.
+    func continueDisplayItems() -> [MediaItem] {
+        let raw = PlaybackProgressStore.all().map(\.item)
+        guard continueMusicGrouping == .byAlbumPlaylist else { return raw }
+        var result: [MediaItem] = []
+        var seenContainerIDs = Set<String>()
+        for item in raw {
+            guard item.type == .music, item.kind == .track,
+                  let parentID = item.parentID else {
+                result.append(item)
+                continue
+            }
+            guard seenContainerIDs.insert(parentID).inserted else { continue }
+            result.append(containerItem(for: item, parentID: parentID))
+        }
+        return result
+    }
+
+    /// Synthesises the album/playlist cell that stands in for an in-progress
+    /// track in the grouped Continue… section.
+    private func containerItem(for track: MediaItem, parentID: String) -> MediaItem {
+        MediaItem(
+            id: parentID,
+            source: track.source,
+            type: .music,
+            kind: track.parentKind ?? .album,
+            title: track.parentTitle ?? track.subtitle ?? track.title,
+            posterURL: track.parentPosterURL ?? track.posterURL,
+            attributes: track.attributes
+        )
+    }
+
+    /// Resumes a grouped Continue… album/playlist: fetches its tracks, finds the
+    /// most-recent in-progress one, and starts inline playback of the container
+    /// from there (startPlayback seeks music to the saved position).
+    func resumeContinueContainer(_ container: MediaItem) async {
+        guard let tracks = try? await provider(for: container)?.children(of: container),
+              !tracks.isEmpty else { return }
+        let inProgress = PlaybackProgressStore.all().first { $0.item.parentID == container.id }
+        let resume = inProgress.flatMap { entry in
+            tracks.first { $0.id == entry.item.id }
+        } ?? inProgress?.item ?? tracks[0]
+        await startPlayback(item: resume, inlinePlaylist: tracks)
+    }
+
+    func load(_ section: MenuSection, force: Bool = false) async {
+        if loadingSections.contains(section) { return }
+        // Continue… is local and cheap; always refresh it.
+        if section == .continueItems {
+            itemsBySection[section] = continueDisplayItems()
+            return
+        }
+        if !force, itemsBySection[section]?.isEmpty == false { return }
+        loadingSections.insert(section)
+        errorsBySection[section] = nil
+        defer { loadingSections.remove(section) }
+
+        var serverItems: [MediaItem] = []
+        var localItems: [MediaItem] = []
+        var failures: [String] = []
+        for provider in providers {
+            do {
+                var providerItems: [MediaItem] = []
+                if let mediaType = section.mediaType {
+                    providerItems = try await provider.items(for: mediaType)
+                } else if section == .playlists {
+                    providerItems = try await provider.playlists()
+                }
+                if provider.source == .local {
+                    localItems = providerItems
+                } else {
+                    serverItems += providerItems
+                }
+            } catch {
+                failures.append("\(provider.source.rawValue): \(error.localizedDescription)")
+            }
+        }
+        // De-dupe: local items only appear when no server item with the same
+        // id exists. When a server is connected and has the item, its poster
+        // gets the green tick via DownloadManager.isDownloaded; the local
+        // entry would be a duplicate.
+        let serverIDs = Set(serverItems.map(\.id))
+        let items = serverItems + localItems.filter { !serverIDs.contains($0.id) }
+        itemsBySection[section] = items
+        // Only surface errors when nothing loaded; partial results win.
+        errorsBySection[section] = items.isEmpty && !failures.isEmpty ? failures.joined(separator: " • ") : nil
+    }
+
+    /// Bumped whenever the connected Plex servers (or their tokens) change,
+    /// so the Libraries tab can reload without reopening.
+    private(set) var serverConfigurationVersion = 0
+
+    /// Called by Settings after adding/removing servers or editing tokens.
+    func plexServersChanged() {
+        serverConfigurationVersion += 1
+        resetCatalog()
+    }
+
+    /// Clears cached catalogs, e.g. after backend settings change.
+    func resetCatalog() {
+        itemsBySection = [:]
+        errorsBySection = [:]
+        drillPath = [:]
+        childrenByItemID = [:]
+        childErrorsByItemID = [:]
+    }
+
+    // MARK: - Search
+
+    /// Deep-search results: matched top-level items per section, plus the
+    /// filtered children for each matched ancestor (shown in drill levels
+    /// while the search is active).
+    private(set) var deepSearchItems: [MenuSection: [MediaItem]] = [:]
+    private(set) var deepSearchChildren: [String: [MediaItem]] = [:]
+    private var deepSearchTask: Task<Void, Never>?
+
+    private var trimmedQuery: String {
+        searchText.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Expands all sections and loads every catalog so typing filters across
+    /// everything at once.
+    func activateSearch() {
+        guard !isSearchActive else { return }
+        isSearchActive = true
+        for section in enabledSections {
+            Task { await load(section) }
+        }
+    }
+
+    func deactivateSearch() {
+        isSearchActive = false
+        searchText = ""
+        deepSearchTask?.cancel()
+        deepSearchItems = [:]
+        deepSearchChildren = [:]
+    }
+
+    /// Kicks off a debounced backend search that matches titles anywhere in
+    /// the hierarchy (tracks, episodes) and maps them back to their
+    /// top-level ancestors.
+    func scheduleDeepSearch() {
+        deepSearchTask?.cancel()
+        let query = trimmedQuery
+        guard !query.isEmpty else {
+            deepSearchItems = [:]
+            deepSearchChildren = [:]
+            return
+        }
+        deepSearchTask = Task {
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+
+            var newItems: [MenuSection: [MediaItem]] = [:]
+            var newChildren: [String: [MediaItem]] = [:]
+            for section in enabledSections {
+                guard let mediaType = section.mediaType else { continue }
+                var chains: [[MediaItem]] = []
+                for provider in providers {
+                    chains += (try? await provider.deepSearch(query, type: mediaType)) ?? []
+                }
+                for chain in chains {
+                    guard let top = chain.first else { continue }
+                    if !(newItems[section] ?? []).contains(where: { $0.id == top.id }) {
+                        newItems[section, default: []].append(top)
+                    }
+                    for (parent, child) in zip(chain, chain.dropFirst())
+                    where !(newChildren[parent.id] ?? []).contains(where: { $0.id == child.id }) {
+                        newChildren[parent.id, default: []].append(child)
+                    }
+                }
+            }
+            // Drop stale results if the query moved on while we searched.
+            guard !Task.isCancelled, trimmedQuery == query else { return }
+            deepSearchItems = newItems
+            deepSearchChildren = newChildren
+        }
+    }
+
+    /// The items to show for a section: the full catalog normally, or —
+    /// while searching — direct title/subtitle matches merged with the
+    /// ancestors of deep matches. Nil when the catalog hasn't loaded yet.
+    /// Items are ordered by the current sort preference for the section.
+    func displayedItems(for section: MenuSection) -> [MediaItem]? {
+        guard let items = itemsBySection[section] else { return nil }
+        let query = trimmedQuery
+        var result: [MediaItem]
+        if isSearchActive, !query.isEmpty {
+            var merged = items.filter { item in
+                item.title.localizedCaseInsensitiveContains(query)
+                    || (item.subtitle?.localizedCaseInsensitiveContains(query) ?? false)
+            }
+            for deep in deepSearchItems[section] ?? [] where !merged.contains(where: { $0.id == deep.id }) {
+                merged.append(deep)
+            }
+            result = merged
+        } else {
+            result = items
+        }
+        return sortedItems(result, for: section)
+    }
+
+    private func sortedItems(_ items: [MediaItem], for section: MenuSection) -> [MediaItem] {
+        let comparator: (MediaItem, MediaItem) -> Bool
+        let direction: SortDirection
+        let applyLocalFirst: Bool
+        switch section {
+        case .movies:
+            direction = movieSortDirection
+            comparator = movieSortComparator(movieSort)
+            applyLocalFirst = movieLocalFirst
+        case .tvShows:
+            direction = tvSortDirection
+            comparator = tvSortComparator(tvSort)
+            applyLocalFirst = tvLocalFirst
+        case .music:
+            direction = musicSortDirection
+            comparator = musicSortComparator(musicSort)
+            applyLocalFirst = musicLocalFirst
+        default:
+            return items
+        }
+        var sorted = items.sorted { a, b in
+            direction == .ascending ? comparator(a, b) : comparator(b, a)
+        }
+        if applyLocalFirst {
+            let dm = DownloadManager.shared
+            let downloadedIDs: Set<String>
+            switch section {
+            case .movies: downloadedIDs = dm.downloadedMovieIDs
+            case .tvShows: downloadedIDs = dm.downloadedTVShowIDs
+            case .music: downloadedIDs = dm.downloadedMusicIDs
+            default: downloadedIDs = []
+            }
+            if !downloadedIDs.isEmpty {
+                let locals = sorted.filter { downloadedIDs.contains($0.id) }
+                let remotes = sorted.filter { !downloadedIDs.contains($0.id) }
+                sorted = locals + remotes
+            }
+        }
+        return sorted
+    }
+
+    private func movieSortComparator(_ sort: MovieSort) -> (MediaItem, MediaItem) -> Bool {
+        switch sort {
+        case .byTitle:
+            return { $0.title.localizedCompare($1.title) == .orderedAscending }
+        case .byYear:
+            return { ($0.sortableYear ?? Int.max) < ($1.sortableYear ?? Int.max) }
+        case .byDateAdded:
+            return { ($0.addedAt ?? .distantFuture) < ($1.addedAt ?? .distantFuture) }
+        case .byPlays:
+            return { ($0.playCount ?? 0) < ($1.playCount ?? 0) }
+        }
+    }
+
+    private func tvSortComparator(_ sort: TVSort) -> (MediaItem, MediaItem) -> Bool {
+        switch sort {
+        case .byTitle:
+            return { $0.title.localizedCompare($1.title) == .orderedAscending }
+        case .byYear:
+            return { ($0.sortableYear ?? Int.max) < ($1.sortableYear ?? Int.max) }
+        case .byDateAdded:
+            return { ($0.addedAt ?? .distantFuture) < ($1.addedAt ?? .distantFuture) }
+        case .byPlays:
+            return { ($0.playCount ?? 0) < ($1.playCount ?? 0) }
+        }
+    }
+
+    private func musicSortComparator(_ sort: MusicSort) -> (MediaItem, MediaItem) -> Bool {
+        switch sort {
+        case .byArtist:
+            return { ($0.subtitle ?? $0.title).localizedCompare($1.subtitle ?? $1.title) == .orderedAscending }
+        case .byTitle:
+            return { $0.title.localizedCompare($1.title) == .orderedAscending }
+        case .byYear:
+            return { ($0.sortableYear ?? Int.max) < ($1.sortableYear ?? Int.max) }
+        case .byDateAdded:
+            return { ($0.addedAt ?? .distantFuture) < ($1.addedAt ?? .distantFuture) }
+        case .byPlays:
+            return { ($0.playCount ?? 0) < ($1.playCount ?? 0) }
+        }
+    }
+
+    /// Children shown in a drill level: the search-filtered subset while a
+    /// query is active (when the backend matched below this container),
+    /// otherwise the full cached children.
+    func displayedChildren(of item: MediaItem) -> [MediaItem]? {
+        if isSearchActive, !trimmedQuery.isEmpty, let filtered = deepSearchChildren[item.id] {
+            return filtered
+        }
+        return childrenByItemID[item.id]
+    }
+
+    // MARK: - Drill-down (show → seasons → episodes, artist → albums → tracks)
+
+    /// Expands a container into a child carousel, or collapses it (and any
+    /// deeper levels) when it's already open. Selecting a sibling swaps the
+    /// levels below it.
+    func toggleDrill(_ item: MediaItem, in section: MenuSection) {
+        var path = drillPath[section] ?? []
+        if let index = path.firstIndex(where: { $0.id == item.id }) {
+            path.removeSubrange(index...)
+        } else if let parentIndex = path.firstIndex(where: { parent in
+            childrenByItemID[parent.id]?.contains { $0.id == item.id } ?? false
+        }) {
+            path = Array(path.prefix(parentIndex + 1)) + [item]
+            loadChildrenIfNeeded(of: item)
+        } else {
+            // Top-level selection replaces the whole path.
+            path = [item]
+            loadChildrenIfNeeded(of: item)
+        }
+        drillPath[section] = path
+    }
+
+    /// The selected child at the level below `parent`, for highlighting.
+    func drilledChildID(under parent: MediaItem, in section: MenuSection) -> String? {
+        guard let path = drillPath[section],
+              let index = path.firstIndex(where: { $0.id == parent.id }),
+              path.indices.contains(index + 1) else {
+            return nil
+        }
+        return path[index + 1].id
+    }
+
+    private func loadChildrenIfNeeded(of item: MediaItem) {
+        // Search results already carry their filtered children.
+        if isSearchActive, !trimmedQuery.isEmpty, deepSearchChildren[item.id] != nil { return }
+        guard childrenByItemID[item.id] == nil, !loadingChildrenIDs.contains(item.id) else { return }
+        loadingChildrenIDs.insert(item.id)
+        childErrorsByItemID[item.id] = nil
+        Task {
+            defer { loadingChildrenIDs.remove(item.id) }
+            do {
+                guard let provider = provider(for: item) else {
+                    throw URLError(.resourceUnavailable)
+                }
+                childrenByItemID[item.id] = try await provider.children(of: item)
+            } catch {
+                childErrorsByItemID[item.id] = error.localizedDescription
+            }
+        }
+    }
+
+    func streamURL(for item: MediaItem) async throws -> URL {
+        // Prefer locally downloaded copy so playback works offline and avoids
+        // a network stream for content already on disk.
+        if let localURL = DownloadManager.shared.localURL(for: item) {
+            return localURL
+        }
+        guard let provider = provider(for: item) else {
+            throw URLError(.resourceUnavailable)
+        }
+        return try await provider.streamURL(for: item)
+    }
+
+    func downloadURL(for item: MediaItem) async throws -> URL {
+        guard let provider = provider(for: item) else {
+            throw URLError(.resourceUnavailable)
+        }
+        return try await provider.downloadURL(for: item)
+    }
+
+    /// All playable (non-expandable) descendants of a container, fetched by
+    /// recursing through the provider's children hierarchy. Used by
+    /// DownloadManager to expand a container download into individual files.
+    func playableDescendants(of item: MediaItem) async -> [MediaItem] {
+        guard item.kind.isExpandable else { return [item] }
+        guard let provider = provider(for: item) else { return [] }
+        do {
+            let children = try await provider.children(of: item)
+            var leaves: [MediaItem] = []
+            for child in children {
+                leaves += await playableDescendants(of: child)
+            }
+            return leaves
+        } catch {
+            return []
+        }
+    }
+
+    /// Returns all playable (non-expandable) descendants of a container, each paired
+    /// with its ancestor chain (outermost container first). Used by DownloadManager
+    /// to build hierarchical file paths that mirror the Plex/QP library hierarchy.
+    func downloadLeaves(of item: MediaItem, ancestors: [MediaItem] = []) async -> [(item: MediaItem, ancestors: [MediaItem])] {
+        guard item.kind.isExpandable else { return [(item, ancestors)] }
+        guard let provider = provider(for: item) else { return [] }
+        do {
+            let children = try await provider.children(of: item)
+            var results: [(MediaItem, [MediaItem])] = []
+            for child in children {
+                results += await downloadLeaves(of: child, ancestors: ancestors + [item])
+            }
+            return results
+        } catch {
+            return []
+        }
+    }
+
+    // MARK: - Queue & auto-continue
+
+    /// The item's siblings within its container, fetching (and caching) them
+    /// if the drill-down hasn't already.
+    func siblings(of item: MediaItem) async -> [MediaItem]? {
+        guard let parentID = item.parentID else { return nil }
+        if let cached = childrenByItemID[parentID] { return cached }
+        let parentStub = MediaItem(
+            id: parentID,
+            source: item.source,
+            type: item.type,
+            kind: item.parentKind ?? (item.kind == .episode ? .season : .album),
+            title: ""
+        )
+        let fetched = try? await provider(for: item)?.children(of: parentStub)
+        if let fetched { childrenByItemID[parentID] = fetched }
+        return fetched
+    }
+
+    /// The remaining items after `item` in its container — the music
+    /// window's "Up Next" queue.
+    func upcomingQueue(after item: MediaItem) async -> [MediaItem] {
+        guard let siblings = await siblings(of: item),
+              let index = siblings.firstIndex(where: { $0.id == item.id }) else {
+            return []
+        }
+        return Array(siblings.dropFirst(index + 1))
+    }
+
+    /// What to play next when `item` finishes, per the Playback preferences.
+    /// Nil means stop.
+    func autoContinueItem(after item: MediaItem) async -> MediaItem? {
+        switch item.type {
+        case .movies:
+            guard movieAutoContinue != .off else { return nil }
+            return try? await provider(for: item)?.nextMovie(after: item, by: movieAutoContinue)
+        case .tvShows:
+            guard tvAutoContinue, item.kind == .episode else { return nil }
+            return await nextSibling(after: item)
+        case .music:
+            guard item.kind == .track else { return nil }
+            switch musicAutoContinue {
+            case .off:
+                // "Off" still finishes the album/playlist in order.
+                return await nextSibling(after: item)
+            case .inSequence:
+                return await nextSibling(after: item)
+            case .shuffleByGenre:
+                return try? await provider(for: item)?.randomTrack(sameArtistAs: item)
+            }
+        }
+    }
+
+    /// The next item in the same container (next episode in a season, next
+    /// track on an album/playlist).
+    private func nextSibling(after item: MediaItem) async -> MediaItem? {
+        guard let siblings = await siblings(of: item),
+              let index = siblings.firstIndex(where: { $0.id == item.id }),
+              siblings.indices.contains(index + 1) else {
+            return nil
+        }
+        return siblings[index + 1]
+    }
+
+    // MARK: - Playback reporting
+
+    /// Fans playback state out to the local Continue… store, the item's
+    /// server (resume position) and, on transitions, to Trakt (movies) and
+    /// Last.fm (music).
+    func reportPlayback(item: MediaItem, state: PlaybackState, positionSeconds: Double, durationSeconds: Double) {
+        PlaybackProgressStore.update(item: item, positionSeconds: positionSeconds, durationSeconds: durationSeconds)
+        if itemsBySection[.continueItems] != nil {
+            itemsBySection[.continueItems] = continueDisplayItems()
+        }
+
+        updateNowPlayingInfo(item: item, state: state, positionSeconds: positionSeconds, durationSeconds: durationSeconds)
+
+        guard item.source != .sample, item.source != .local else { return }
+        Task {
+            switch item.source {
+            case .plex:
+                let configurations = plexConfigurations
+                let serverID = item.attributes[PlexMediaProvider.serverIDAttribute]
+                let configuration = configurations.first { $0.serverID == serverID }
+                    ?? configurations.first
+                if let configuration {
+                    try? await PlexClient(config: configuration).reportTimeline(
+                        ratingKey: item.id,
+                        state: state,
+                        positionSeconds: positionSeconds,
+                        durationSeconds: durationSeconds
+                    )
+                }
+            case .jellyfin:
+                if let configuration = jellyfinConfiguration {
+                    try? await JellyfinClient(config: configuration).reportPlayback(
+                        itemID: item.id,
+                        state: state,
+                        positionSeconds: positionSeconds
+                    )
+                }
+            case .sample, .local:
+                break
+            }
+
+            // Scrobblers only care about transitions, not periodic progress.
+            guard state != .playing else { return }
+            let progressPercent = durationSeconds > 0 ? positionSeconds / durationSeconds * 100 : 0
+            await scrobble(item: item, state: state, progressPercent: progressPercent)
+        }
+    }
+
+    private func updateNowPlayingInfo(item: MediaItem, state: PlaybackState, positionSeconds: Double, durationSeconds: Double) {
+        guard UserDefaults.standard.bool(forKey: SettingsKeys.useMediaKeys) else {
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            MPNowPlayingInfoCenter.default().playbackState = .stopped
+            return
+        }
+
+        if state == .stopped {
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            MPNowPlayingInfoCenter.default().playbackState = .stopped
+            return
+        }
+
+        var info = [String: Any]()
+        info[MPMediaItemPropertyTitle] = item.title
+        if let subtitle = item.subtitle {
+            info[MPMediaItemPropertyArtist] = subtitle
+        }
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = positionSeconds
+        if durationSeconds > 0 {
+            info[MPMediaItemPropertyPlaybackDuration] = durationSeconds
+        }
+        info[MPNowPlayingInfoPropertyPlaybackRate] = state == .playing ? 1.0 : 0.0
+        
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        MPNowPlayingInfoCenter.default().playbackState = state == .playing ? .playing : .paused
+    }
+
+    private func scrobble(item: MediaItem, state: PlaybackState, progressPercent: Double) async {
+        switch item.type {
+        case .movies:
+            guard let token = KeychainStore.string(for: KeychainKeys.traktAccessToken), !token.isEmpty else { return }
+            let client = TraktClient()
+            do {
+                try await client.scrobble(
+                    state: state,
+                    title: item.title,
+                    year: item.year,
+                    progressPercent: progressPercent,
+                    accessToken: token
+                )
+            } catch TraktError.unauthorized {
+                guard let refreshToken = KeychainStore.string(for: KeychainKeys.traktRefreshToken) else { return }
+                if let (newAccess, newRefresh) = try? await TraktClient.refreshAccessToken(refreshToken) {
+                    KeychainStore.set(newAccess, for: KeychainKeys.traktAccessToken)
+                    KeychainStore.set(newRefresh, for: KeychainKeys.traktRefreshToken)
+                    try? await client.scrobble(
+                        state: state,
+                        title: item.title,
+                        year: item.year,
+                        progressPercent: progressPercent,
+                        accessToken: newAccess
+                    )
+                }
+            } catch {
+                // Scrobble errors are silently ignored.
+            }
+        case .music:
+            // Scrobble once, when playback ends past the halfway mark.
+            guard state == .stopped, progressPercent > 50,
+                  let sessionKey = KeychainStore.string(for: KeychainKeys.lastfmSessionKey), !sessionKey.isEmpty,
+                  let artist = item.subtitle else {
+                return
+            }
+            try? await LastFMClient().scrobble(artist: artist, track: item.title, sessionKey: sessionKey)
+        case .tvShows:
+            break  // episode-level identity needed; not tracked yet
+        }
+    }
+
+    // MARK: - Local Library refresh (indexing + metadata scraping)
+
+    /// Scans each library folder, indexes newly dropped files so they are
+    /// playable, and fetches cover art / metadata from Last.fm, Trakt, and
+    /// TMDb for items that don't have it yet. Idempotent: items that already
+    /// have a posterURL are not re-scraped.
+    func refreshLocalLibrary() async {
+        #if os(macOS)
+        let defaults = UserDefaults.standard
+
+        let tmdbKey: String? = {
+            let v = defaults.string(forKey: SettingsKeys.tmdbAPIKey) ?? ""
+            return v.isEmpty ? nil : v
+        }()
+
+        let tmdb = tmdbKey.map { TMDbClient(apiKey: $0) }
+        let lastfm = LastFMClient()
+        let trakt = TraktClient()
+
+        for type in MediaType.allCases {
+            guard let folder = DownloadManager.resolvedLibraryFolder(for: type) else { continue }
+            let scanned = LocalLibraryScanner(type: type, folder: folder).scan()
+            let existingByID: [String: DownloadIndexEntry] = {
+                var d: [String: DownloadIndexEntry] = [:]
+                for e in DownloadManager.libraryIndexedEntries(for: type) { d[e.item.id] = e }
+                return d
+            }()
+
+            var enriched: [DownloadIndexEntry] = []
+            for entry in scanned {
+                // Preserve already-scraped items without hitting the network again.
+                if let existing = existingByID[entry.item.id], existing.item.posterURL != nil {
+                    enriched.append(existing)
+                    continue
+                }
+
+                var item = entry.item
+                switch type {
+                case .music:
+                    let artist = item.subtitle ?? ""
+                    let album = item.parentTitle ?? ""
+                    if !artist.isEmpty, !album.isEmpty,
+                       let info = await lastfm.albumInfo(artist: artist, album: album) {
+                        item.posterURL = info.imageURL
+                    } else if !artist.isEmpty,
+                              let url = await lastfm.artistImageURL(artist: artist) {
+                        item.posterURL = url
+                    }
+                case .movies:
+                    var tmdbID: Int?
+                    tmdbID = await trakt.searchMovie(title: item.title, year: item.year)?.tmdbID
+                    if tmdbID == nil, let t = tmdb {
+                        tmdbID = await t.searchMovie(title: item.title, year: item.year)?.tmdbID
+                    }
+                    if let id = tmdbID, let t = tmdb,
+                       let path = await t.moviePosterPath(tmdbID: id) {
+                        item.posterURL = TMDbClient.posterURL(path: path)
+                    }
+                case .tvShows:
+                    // Derive the show title from the filename path: first component
+                    // is the show folder (e.g. "Breaking Bad/Season 1/S01E01.mkv").
+                    let showTitle: String = entry.filename.map { f in
+                        String(f.split(separator: "/").first ?? "")
+                    } ?? item.title
+                    var tmdbID: Int?
+                    tmdbID = await trakt.searchShow(title: showTitle)?.tmdbID
+                    if tmdbID == nil, let t = tmdb {
+                        tmdbID = await t.searchTV(title: showTitle)?.tmdbID
+                    }
+                    if let id = tmdbID, let t = tmdb,
+                       let path = await t.tvPosterPath(tmdbID: id) {
+                        item.posterURL = TMDbClient.posterURL(path: path)
+                    }
+                }
+                enriched.append(DownloadIndexEntry(item: item, filename: entry.filename))
+            }
+
+            DownloadManager.mergeLibraryIndex(enriched, for: type)
+        }
+
+        resetCatalog()
+        #endif
+    }
+
+    // MARK: - Playback service (shared audio engine for inline and popout modes)
+
+    var currentItem: MediaItem?
+    var player: AVPlayer?
+    /// SwiftVLC bridge for local files in containers AVFoundation can't decode (e.g. .mkv).
+    /// Exactly one of `player` and `vlcBridge` is non-nil during a session.
+    private(set) var vlcBridge: VLCPlayerBridge?
+    var isPlaying = false
+    var currentTime: Double = 0
+    var totalDuration: Double = 0
+    var isScrubbing = false
+    var volume: Float = 1.0
+    /// Non-nil error message to display in the player window when a session fails.
+    var playbackError: String?
+    /// Ordered track list backing the active inline (menu-bar carousel)
+    /// session; nil when playback belongs to a player window.
+    private(set) var inlinePlaylist: [MediaItem]?
+    private var timeObserver: Any?
+    private var statusObservation: NSKeyValueObservation?
+    /// Bumped whenever a session starts or stops so async work from a
+    /// superseded session can detect it should bail out.
+    private var playbackGeneration = 0
+    private var endObservationTask: Task<Void, Never>?
+    /// Notification posted by the SwiftVLC event watcher when playback ends
+    /// naturally; PlayerView.watchForPlaybackEnd listens for it.
+    static let vlcPlaybackEndedNotification = NSNotification.Name("QP.VLCPlaybackEnded")
+
+    /// True when either engine is active and ready for transport controls.
+    var hasActivePlayer: Bool { player != nil || vlcBridge != nil }
+
+    func startPlayback(item: MediaItem, inlinePlaylist: [MediaItem]? = nil) async {
+        playbackGeneration += 1
+        let generation = playbackGeneration
+        tearDownPlayer()
+        currentItem = item
+        playbackError = nil
+        self.inlinePlaylist = inlinePlaylist
+        do {
+            let url = try await streamURL(for: item)
+            // Another session started (or the window closed) while the
+            // stream URL resolved; playing now would leave orphaned audio.
+            guard generation == playbackGeneration else { return }
+
+            if isAVFoundationPlayable(url) {
+                // ── AVPlayer path (streaming + compatible local files) ──────────
+                let newPlayer = AVPlayer(url: url)
+                newPlayer.volume = volume
+                player = newPlayer
+
+                if item.type == .music {
+                    if let saved = PlaybackProgressStore.position(forItemID: item.id), saved > 5 {
+                        await newPlayer.seek(to: CMTime(seconds: saved, preferredTimescale: 600))
+                    }
+                }
+                newPlayer.play()
+                reportPlayback(item: item, state: .started, positionSeconds: 0, durationSeconds: 0)
+
+                var lastReport = Date.distantPast
+                timeObserver = newPlayer.addPeriodicTimeObserver(
+                    forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
+                    queue: .main
+                ) { [weak self] time in
+                    guard let self else { return }
+                    Task { @MainActor [weak self] in
+                        guard let self, let player = self.player else { return }
+                        self.totalDuration = self.duration(of: player)
+                        if !self.isScrubbing {
+                            self.currentTime = time.seconds
+                        }
+                        if player.timeControlStatus == .playing, Date.now.timeIntervalSince(lastReport) >= 15 {
+                            let dur = self.totalDuration
+                            self.reportPlayback(
+                                item: item,
+                                state: .playing,
+                                positionSeconds: time.seconds,
+                                durationSeconds: dur
+                            )
+                            lastReport = .now
+                        }
+                    }
+                }
+
+                statusObservation = newPlayer.observe(\.timeControlStatus, options: [.old, .new]) { [weak self] _, _ in
+                    guard let self else { return }
+                    Task { @MainActor [weak self] in
+                        guard let self, let player = self.player else { return }
+                        self.isPlaying = player.timeControlStatus == .playing
+                        let state: PlaybackState? = switch player.timeControlStatus {
+                        case .playing: .playing
+                        case .paused: .paused
+                        default: nil
+                        }
+                        if let state {
+                            self.reportPlayback(
+                                item: item,
+                                state: state,
+                                positionSeconds: player.currentTime().seconds,
+                                durationSeconds: self.duration(of: player)
+                            )
+                        }
+                    }
+                }
+
+                // Inline sessions have no player window watching for track end,
+                // so the engine advances through the playlist itself.
+                if inlinePlaylist != nil, let playerItem = newPlayer.currentItem {
+                    endObservationTask = Task { @MainActor [weak self] in
+                        for await _ in NotificationCenter.default.notifications(
+                            named: AVPlayerItem.didPlayToEndTimeNotification,
+                            object: playerItem
+                        ) {
+                            break
+                        }
+                        guard let self, !Task.isCancelled,
+                              generation == self.playbackGeneration else { return }
+                        self.handleInlineTrackEnd()
+                    }
+                }
+            } else {
+                // ── SwiftVLC path (local files AVFoundation can't decode, e.g. .mkv) ──
+                await startVLCBridgePlayback(url: url, item: item, inlinePlaylist: inlinePlaylist, generation: generation)
+            }
+        } catch {
+            if generation == playbackGeneration {
+                currentItem = nil
+                playbackError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Starts the SwiftVLC engine for a local file whose container AVFoundation
+    /// cannot play. Kept separate so the AVPlayer path above stays readable.
+    @MainActor
+    private func startVLCBridgePlayback(
+        url: URL,
+        item: MediaItem,
+        inlinePlaylist: [MediaItem]?,
+        generation: Int
+    ) async {
+        guard generation == playbackGeneration else { return }
+        let bridge = VLCPlayerBridge()
+        vlcBridge = bridge
+        // Store the URL for deferred play — VLCVideoPlayerView.onAppear calls
+        // playPending() once its NSView is attached to the window hierarchy.
+        // Calling play() before VideoView appears causes libVLC's video output
+        // module to crash with "cannot create video output window without NSApplication".
+        bridge.setPendingURL(url)
+        try? bridge.setVolume(volume)
+        reportPlayback(item: item, state: .started, positionSeconds: 0, durationSeconds: 0)
+
+        // Poll the bridge's @Observable mirrors every 400 ms to sync transport state
+        // and detect end-of-item. libVLC often never emits a raw lengthChanged event,
+        // so polling the Player's native properties is the reliable path.
+        endObservationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var lastReport = Date.distantPast
+            var wasPlaying = false
+            while !Task.isCancelled, generation == self.playbackGeneration {
+                try? await Task.sleep(for: .milliseconds(400))
+                guard !Task.isCancelled, generation == self.playbackGeneration else { break }
+
+                let duration = bridge.durationSeconds
+                let time = bridge.currentTimeSeconds
+                let playing = bridge.isPlaying
+
+                self.totalDuration = duration
+                if !self.isScrubbing { self.currentTime = time }
+
+                if playing != wasPlaying {
+                    self.isPlaying = playing
+                    let state: PlaybackState = playing ? .playing : .paused
+                    self.reportPlayback(item: item, state: state,
+                                        positionSeconds: time, durationSeconds: duration)
+                    wasPlaying = playing
+                } else if playing, Date.now.timeIntervalSince(lastReport) >= 15 {
+                    self.reportPlayback(item: item, state: .playing,
+                                        positionSeconds: time, durationSeconds: duration)
+                    lastReport = .now
+                }
+
+                if bridge.didReachEnd {
+                    if inlinePlaylist != nil {
+                        self.handleInlineTrackEnd()
+                    } else {
+                        NotificationCenter.default.post(
+                            name: AppState.vlcPlaybackEndedNotification, object: nil
+                        )
+                    }
+                    return
+                }
+
+                if bridge.isError {
+                    self.playbackError = "Playback failed"
+                    return
+                }
+            }
+        }
+    }
+
+    func togglePlayPause() {
+        if let player {
+            isPlaying ? player.pause() : player.play()
+        } else {
+            vlcBridge?.togglePlayPause()
+        }
+    }
+
+    func seek(to seconds: Double) {
+        if let player {
+            player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
+        } else {
+            try? vlcBridge?.seek(toSeconds: seconds)
+        }
+    }
+
+    func setVolume(_ newVolume: Float) {
+        volume = max(0, min(1, newVolume))
+        player?.volume = volume
+        try? vlcBridge?.setVolume(volume)
+    }
+
+    /// Plays the playlist item `offset` positions from the current track in
+    /// the active inline session (+1 = next, -1 = previous).
+    func playInlineNeighbor(_ offset: Int) {
+        guard let playlist = inlinePlaylist,
+              let currentItem,
+              let index = playlist.firstIndex(where: { $0.id == currentItem.id }),
+              playlist.indices.contains(index + offset) else { return }
+        let target = playlist[index + offset]
+        Task {
+            await startPlayback(item: target, inlinePlaylist: playlist)
+        }
+    }
+
+    /// Whether the active inline session has a track `offset` positions from
+    /// the current one (enables/disables the overlay's skip buttons).
+    func hasInlineNeighbor(_ offset: Int) -> Bool {
+        guard let playlist = inlinePlaylist,
+              let currentItem,
+              let index = playlist.firstIndex(where: { $0.id == currentItem.id }) else { return false }
+        return playlist.indices.contains(index + offset)
+    }
+
+    private func handleInlineTrackEnd() {
+        guard let playlist = inlinePlaylist, let finished = currentItem else { return }
+        stopPlayback(atEnd: true)
+        guard let index = playlist.firstIndex(where: { $0.id == finished.id }),
+              playlist.indices.contains(index + 1) else { return }
+        Task {
+            await startPlayback(item: playlist[index + 1], inlinePlaylist: playlist)
+        }
+    }
+
+    func stopPlayback(atEnd: Bool = false) {
+        playbackGeneration += 1
+        if let player, let currentItem {
+            let dur = duration(of: player)
+            reportPlayback(
+                item: currentItem,
+                state: .stopped,
+                positionSeconds: atEnd ? dur : player.currentTime().seconds,
+                durationSeconds: dur
+            )
+        } else if let currentItem {
+            let pos = atEnd ? totalDuration : currentTime
+            reportPlayback(item: currentItem, state: .stopped,
+                           positionSeconds: pos, durationSeconds: totalDuration)
+        }
+        tearDownPlayer()
+        currentItem = nil
+        inlinePlaylist = nil
+    }
+
+    /// Stops playback only if `item` still owns the engine — a stale window
+    /// closing must not kill a session another player has since started.
+    func stopPlayback(if item: MediaItem) {
+        guard currentItem?.id == item.id else { return }
+        stopPlayback()
+    }
+
+    private func tearDownPlayer() {
+        endObservationTask?.cancel()
+        endObservationTask = nil
+        if let player, let timeObserver {
+            player.removeTimeObserver(timeObserver)
+        }
+        timeObserver = nil
+        statusObservation = nil
+        player?.pause()
+        player = nil
+        vlcBridge?.stop()
+        vlcBridge = nil
+        isPlaying = false
+        currentTime = 0
+        totalDuration = 0
+    }
+
+    private func duration(of player: AVPlayer) -> Double {
+        let s = player.currentItem?.duration.seconds ?? 0
+        return s.isFinite ? s : 0
+    }
+}

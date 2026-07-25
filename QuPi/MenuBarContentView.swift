@@ -1,0 +1,381 @@
+#if os(macOS)
+import SwiftUI
+
+/// The dropdown shown when the menu bar icon is clicked: a row per enabled
+/// section, each expanding into a horizontal poster carousel with drill-down
+/// levels. Focusing the search field expands every section and filters all
+/// catalogs as you type.
+struct MenuBarContentView: View {
+    @Environment(AppState.self) private var appState
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
+    @Environment(\.dismiss) private var dismiss
+
+    private let downloadManager = DownloadManager.shared
+
+    @FocusState private var searchFocused: Bool
+    @AppStorage(SettingsKeys.cacheArtwork) private var cacheArtwork = true
+    @AppStorage("carouselVisibleCount") private var carouselVisibleCount = 3
+    @AppStorage(SettingsKeys.playerMode) private var playerMode = PlayerMode.popout.rawValue
+
+    private var contentWidth: CGFloat {
+        MediaCarouselView.carouselWidth(for: carouselVisibleCount) + 24
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            Divider()
+
+            // 1. Downloading Section (excludes items currently in Converting)
+            let activeDownloads = downloadManager.downloadingItems.filter { downloadingItem in
+                !downloadManager.transcodeQueue.contains(where: { $0.id == downloadingItem.id })
+            }
+            if !activeDownloads.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        Image(systemName: "arrow.down.circle")
+                            .frame(width: 20)
+                        Text("Downloading")
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    
+                    MediaCarouselView(
+                        items: activeDownloads,
+                        selectedID: nil,
+                        isCompact: true,
+                        onSelect: { item in
+                            if !item.kind.isExpandable {
+                                openWindow(id: item.type == .music ? "music-player" : "video-player", value: item)
+                                NSApplication.shared.activate()
+                                dismiss()
+                            }
+                        }
+                    )
+                    .padding(.bottom, 10)
+                }
+                Divider()
+            }
+
+            // 2. Converting Section (uses compact MediaCarouselView matching Downloading & Simple Visuals)
+            if !downloadManager.transcodeQueue.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        Image(systemName: "gearshape.2")
+                            .frame(width: 20)
+                        Text("Converting")
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    
+                    let convertingItems = downloadManager.transcodeQueue.map { entry in
+                        MediaItem(
+                            id: entry.id,
+                            source: .local,
+                            type: entry.mediaType,
+                            kind: entry.mediaType == .tvShows ? .episode : .movie,
+                            title: entry.title,
+                            posterURL: entry.posterURL
+                        )
+                    }
+                    
+                    MediaCarouselView(
+                        items: convertingItems,
+                        selectedID: nil,
+                        isCompact: true,
+                        onSelect: { item in
+                            if !item.kind.isExpandable {
+                                openWindow(id: item.type == .music ? "music-player" : "video-player", value: item)
+                                NSApplication.shared.activate()
+                                dismiss()
+                            }
+                        }
+                    )
+                    .padding(.bottom, 10)
+                }
+                Divider()
+            }
+
+            ForEach(appState.enabledSections) { section in
+                self.section(for: section)
+                if section != appState.enabledSections.last {
+                    Divider()
+                }
+            }
+        }
+        .frame(width: contentWidth)
+        .fixedSize(horizontal: false, vertical: true)
+        .asyncImageURLSession(cacheArtwork ? ArtworkCache.persistentSession : ArtworkCache.ephemeralSession)
+        .onChange(of: searchFocused) {
+            if searchFocused {
+                withAnimation(.snappy(duration: 0.2)) { appState.activateSearch() }
+            } else if appState.searchText.isEmpty {
+                withAnimation(.snappy(duration: 0.2)) { appState.deactivateSearch() }
+            }
+        }
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                Label("QuPi", systemImage: "play.square.stack")
+                    .font(.headline)
+                Text(appState.sourcesDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            searchField
+            Button("Offline Mode", systemImage: "airplane") {
+                appState.isOfflineMode.toggle()
+            }
+            .buttonStyle(.plain)
+            .labelStyle(.iconOnly)
+            .foregroundStyle(appState.isOfflineMode ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+            .help(appState.isOfflineMode ? "Disable Offline Mode" : "Enable Offline Mode")
+            Button("Settings", systemImage: "gearshape") {
+                openSettings()
+                NSApplication.shared.activate()
+                dismiss()
+            }
+            .buttonStyle(.plain)
+            .labelStyle(.iconOnly)
+            .help("Settings")
+            Button("Quit QuPi", systemImage: "power") {
+                NSApplication.shared.terminate(nil)
+            }
+            .buttonStyle(.plain)
+            .labelStyle(.iconOnly)
+            .help("Quit QuPi")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    private var searchField: some View {
+        @Bindable var appState = appState
+        return HStack(spacing: 4) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+                .font(.caption)
+            TextField("Search", text: $appState.searchText)
+                .textFieldStyle(.plain)
+                .focused($searchFocused)
+                .onExitCommand {
+                    searchFocused = false
+                    withAnimation(.snappy(duration: 0.2)) { appState.deactivateSearch() }
+                }
+            if !appState.searchText.isEmpty {
+                Button("Clear search", systemImage: "xmark.circle.fill") {
+                    appState.searchText = ""
+                }
+                .buttonStyle(.plain)
+                .labelStyle(.iconOnly)
+                .foregroundStyle(.secondary)
+                .font(.caption)
+                .help("Clear search")
+            }
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 7))
+        .frame(maxWidth: .infinity)
+        .onChange(of: appState.searchText) {
+            if !appState.searchText.isEmpty {
+                withAnimation(.snappy(duration: 0.2)) { appState.activateSearch() }
+            }
+            appState.scheduleDeepSearch()
+        }
+    }
+
+    // MARK: - Filter Helper
+    
+    /// Filters items for a section, taking offline mode into account.
+    private func visibleItems(for section: MenuSection) -> [MediaItem]? {
+        appState.displayedItems(for: section)?.filter { item in
+            section != .continueItems || !appState.isOfflineMode || downloadManager.isDownloaded(item)
+        }
+    }
+
+    // MARK: - Sections
+
+    private func isExpanded(_ section: MenuSection) -> Bool {
+        appState.isSearchActive || appState.expandedSection == section
+    }
+
+    @ViewBuilder
+    private func section(for section: MenuSection) -> some View {
+        Button {
+            // Rows are static headers while a search is active.
+            guard !appState.isSearchActive else { return }
+            withAnimation(.snappy(duration: 0.2)) {
+                appState.toggleExpansion(of: section)
+            }
+        } label: {
+            HStack {
+                Image(systemName: section.systemImage)
+                    .frame(width: 20)
+                Text(section.title)
+                Spacer()
+                if let count = visibleItems(for: section)?.count {
+                    Text("\(count)")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(isExpanded(section) ? 90 : 0))
+            }
+            .contentShape(Rectangle())
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(.plain)
+
+        if isExpanded(section) {
+            sectionContent(for: section)
+                .padding(.bottom, 10)
+        }
+    }
+
+    @ViewBuilder
+    private func sectionContent(for section: MenuSection) -> some View {
+        if appState.loadingSections.contains(section) {
+            HStack {
+                Spacer()
+                ProgressView()
+                    .controlSize(.small)
+                Spacer()
+            }
+            .frame(height: section.loadingHeight)
+        } else if let error = appState.errorsBySection[section] {
+            VStack(spacing: 6) {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Button("Retry") {
+                    Task { await appState.load(section, force: true) }
+                }
+                .controlSize(.small)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            
+        } else if let items = visibleItems(for: section), !items.isEmpty {
+            MediaCarouselView(
+                items: items,
+                selectedID: appState.currentItem?.id ?? appState.drillPath[section]?.first?.id,
+                navigationStep: playerMode == PlayerMode.inline.rawValue ? 1 : nil,
+                nowPlayingItem: (section.supportsInlineMusic && playerMode == PlayerMode.inline.rawValue) ? appState.currentItem : nil,
+                isPlaying: appState.isPlaying,
+                onPlayPause: appState.togglePlayPause,
+                onPrevious: { appState.playInlineNeighbor(-1) },
+                onNext: { appState.playInlineNeighbor(1) }
+            ) { item in
+                handleSelection(of: item, in: section, within: items)
+            }
+            ForEach(appState.drillPath[section] ?? [], id: \.id) { parent in
+                drillLevel(for: parent, in: section)
+            }
+        } else if appState.isSearchActive && !appState.searchText.isEmpty {
+            Text("No matches for \"\(appState.searchText)\"")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+        } else {
+            Text(section == .continueItems
+                 ? (appState.isOfflineMode ? "No downloaded items in progress." : "Nothing in progress — items you stop partway through appear here.")
+                 : "Nothing here yet.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+        }
+    }
+
+    private func handleSelection(of item: MediaItem, in section: MenuSection, within items: [MediaItem]) {
+        if section == .continueItems, item.type == .music, item.kind.isExpandable,
+           playerMode == PlayerMode.inline.rawValue {
+            Task { await appState.resumeContinueContainer(item) }
+            return
+        }
+        if item.kind.isExpandable {
+            withAnimation(.snappy(duration: 0.2)) {
+                appState.toggleDrill(item, in: section)
+            }
+        } else if item.type == .music && playerMode == PlayerMode.inline.rawValue {
+            let playlist = items.filter { !$0.kind.isExpandable }
+            Task {
+                await appState.startPlayback(item: item, inlinePlaylist: playlist)
+            }
+        } else {
+            openWindow(id: item.type == .music ? "music-player" : "video-player", value: item)
+            NSApplication.shared.activate()
+            dismiss()
+        }
+    }
+
+    private func drillLevelTitle(for parent: MediaItem) -> String {
+        if appState.tvTopLevel == .season, parent.kind == .season {
+            let seriesName = parent.parentTitle ?? parent.subtitle
+            if let seriesName {
+                return "\(seriesName) — \(parent.title)"
+            }
+        }
+        return parent.title
+    }
+
+    @ViewBuilder
+    private func drillLevel(for parent: MediaItem, in section: MenuSection) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(drillLevelTitle(for: parent), systemImage: "arrow.turn.down.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+            if appState.loadingChildrenIDs.contains(parent.id) {
+                HStack {
+                    Spacer()
+                    ProgressView()
+                        .controlSize(.small)
+                    Spacer()
+                }
+                .frame(height: 60)
+            } else if let error = appState.childErrorsByItemID[parent.id] {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+            } else if let children = appState.displayedChildren(of: parent)?.filter({ !appState.isOfflineMode || downloadManager.isDownloaded($0) }), !children.isEmpty {
+                MediaCarouselView(
+                    items: children,
+                    selectedID: appState.drilledChildID(under: parent, in: section),
+                    navigationStep: playerMode == PlayerMode.inline.rawValue ? 1 : nil,
+                    nowPlayingItem: (section.supportsInlineMusic && playerMode == PlayerMode.inline.rawValue) ? appState.currentItem : nil,
+                    isPlaying: appState.isPlaying,
+                    onPlayPause: appState.togglePlayPause,
+                    onPrevious: { appState.playInlineNeighbor(-1) },
+                    onNext: { appState.playInlineNeighbor(1) }
+                ) { child in
+                    handleSelection(of: child, in: section, within: children)
+                }
+            } else {
+                Text("No items found.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+            }
+        }
+        .padding(.top, 6)
+    }
+}
+#endif // os(macOS)
