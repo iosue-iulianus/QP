@@ -18,10 +18,11 @@ QuPi is a sleek, lightweight, and highly customizable menu bar application desig
     *   Switch to a streamlined view for a cleaner look (`Compact-Mode.jpg`).
 
 ## Screenshots
+
 ![Welcome.](/Screenshots/Welcome-QuPi.png)
 ![Simple Visuals Mode.](/Screenshots/Compact-Mode.png)
-![Mini Video Player.](/Screenshots/Mini-Video-Player)
-![Inline Music Player.](/Screenshots/Inline-Music-Player)
+![Mini Video Player.](/Screenshots/Mini-Video-Player.png)
+![Inline Music Player.](/Screenshots/Inline-Music-Player.png)
 ![Full Library Exploration.](/Screenshots/Full-Library-Exploration.png)
 ![Download Queue.](/Screenshots/Download-Queue.png)
 ![Dynamic Filtering.](/Screenshots/Dynamic-Filtering.png)
