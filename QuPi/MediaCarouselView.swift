@@ -82,10 +82,11 @@ struct MediaCarouselView: View {
                             onSelect(item)
                         }
                         if isNowPlaying, let onPlayPause {
-                            let progress = appState.totalDuration > 0 ? max(0, min(1, appState.currentTime / appState.totalDuration)) : 0
                             InlinePlayerOverlay(
                                 isPlaying: isPlaying,
-                                progress: progress,
+                                progress: { [appState] in
+                                    appState.totalDuration > 0 ? appState.currentTime / appState.totalDuration : 0
+                                },
                                 canGoPrevious: appState.hasInlineNeighbor(-1),
                                 canGoNext: appState.hasInlineNeighbor(1),
                                 onPlayPause: onPlayPause,
