@@ -259,6 +259,30 @@ enum LibrarySort: String, CaseIterable {
     case byDateAdded
     case byPlays
 
+    var title: String {
+        switch self {
+        case .byArtist: "Artist"
+        case .byTitle: "Title"
+        case .byYear: "Year"
+        case .byDateAdded: "Date Added"
+        case .byPlays: "Plays"
+        }
+    }
+
+    /// How ascending and descending read for this sort.
+    var directionTitles: (ascending: String, descending: String) {
+        switch self {
+        case .byArtist, .byTitle: ("A to Z", "Z to A")
+        case .byYear, .byDateAdded: ("Oldest First", "Newest First")
+        case .byPlays: ("Fewest Plays First", "Most Plays First")
+        }
+    }
+
+    /// The sorts a section offers; Artist only applies to Music.
+    static func options(for section: MenuSection) -> [LibrarySort] {
+        section == .music ? allCases : allCases.filter { $0 != .byArtist }
+    }
+
     /// True when `a` comes before `b`. Items without the value (no year or
     /// date added) go last in either direction.
     func areInOrder(_ a: MediaItem, _ b: MediaItem, descending: Bool) -> Bool {

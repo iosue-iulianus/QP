@@ -69,86 +69,50 @@ struct VisualsSettingsView: View {
                 SectionInfoHeader(title: "Navigation", info: "Series lists shows that drill into seasons, then episodes; Season lists every season directly. Artist lists artists that drill into albums, then tracks; Album lists albums directly.")
             }
             Section {
-                LabeledContent("Movies") {
-                    HStack {
-                        Picker("", selection: $appState.movieSortRaw) {
-                            Text("Title").tag(LibrarySort.byTitle.rawValue)
-                            Text("Year").tag(LibrarySort.byYear.rawValue)
-                            Text("Date Added").tag(LibrarySort.byDateAdded.rawValue)
-                            Text("Plays").tag(LibrarySort.byPlays.rawValue)
-                        }
-                        .labelsHidden()
-                        .fixedSize()
-                        Spacer()
-                        Toggle("Local First", isOn: $appState.movieLocalFirst)
-                    }
-                }
-                HStack {
-                    Spacer()
-                    Picker("", selection: $appState.movieSortDirectionRaw) {
-                        Text("A -> Z").tag(SortDirection.ascending.rawValue)
-                        Text("Z -> A").tag(SortDirection.descending.rawValue)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .fixedSize()
-                }
-                LabeledContent("TV Shows") {
-                    HStack {
-                        Picker("", selection: $appState.tvSortRaw) {
-                            Text("Title").tag(LibrarySort.byTitle.rawValue)
-                            Text("Year").tag(LibrarySort.byYear.rawValue)
-                            Text("Date Added").tag(LibrarySort.byDateAdded.rawValue)
-                            Text("Plays").tag(LibrarySort.byPlays.rawValue)
-                        }
-                        .labelsHidden()
-                        .fixedSize()
-                        Spacer()
-                        Toggle("Local First", isOn: $appState.tvLocalFirst)
-                    }
-                }
-                HStack {
-                    Spacer()
-                    Picker("", selection: $appState.tvSortDirectionRaw) {
-                        Text("A -> Z").tag(SortDirection.ascending.rawValue)
-                        Text("Z -> A").tag(SortDirection.descending.rawValue)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .fixedSize()
-                }
-                LabeledContent("Music") {
-                    HStack {
-                        Picker("", selection: $appState.musicSortRaw) {
-                            Text("Artist").tag(LibrarySort.byArtist.rawValue)
-                            Text("Title").tag(LibrarySort.byTitle.rawValue)
-                            Text("Year").tag(LibrarySort.byYear.rawValue)
-                            Text("Date Added").tag(LibrarySort.byDateAdded.rawValue)
-                            Text("Plays").tag(LibrarySort.byPlays.rawValue)
-                        }
-                        .labelsHidden()
-                        .fixedSize()
-                        Spacer()
-                        Toggle("Local First", isOn: $appState.musicLocalFirst)
-                    }
-                }
-                HStack {
-                    Spacer()
-                    Picker("", selection: $appState.musicSortDirectionRaw) {
-                        Text("A -> Z").tag(SortDirection.ascending.rawValue)
-                        Text("Z -> A").tag(SortDirection.descending.rawValue)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .fixedSize()
-                }
+                sortRow("Movies", section: .movies, sort: $appState.movieSortRaw,
+                        direction: $appState.movieSortDirectionRaw, localFirst: $appState.movieLocalFirst)
+                sortRow("TV Shows", section: .tvShows, sort: $appState.tvSortRaw,
+                        direction: $appState.tvSortDirectionRaw, localFirst: $appState.tvLocalFirst)
+                sortRow("Music", section: .music, sort: $appState.musicSortRaw,
+                        direction: $appState.musicSortDirectionRaw, localFirst: $appState.musicLocalFirst)
             } header: {
-                SectionInfoHeader(title: "Sorting", info: "Choose how each section is ordered. Date Added and Plays require server data and may not be available for all items. Local First floats downloaded and converted files to the front of the list.")
+                SectionInfoHeader(title: "Sorting", info: "Choose how each section is ordered. Date Added and Plays require server data and may not be available for all items. Local First floats downloaded files to the front of the list.")
             }
         }
         .formStyle(.grouped)
         .onChange(of: tvTopLevel) { appState.resetCatalog() }
         .onChange(of: musicTopLevel) { appState.resetCatalog() }
+    }
+
+    /// Sort field, order and Local First for one section. Order labels
+    /// follow the field ("Newest First" for dates, "A to Z" for titles).
+    @ViewBuilder
+    private func sortRow(_ label: String, section: MenuSection, sort: Binding<String>,
+                         direction: Binding<String>, localFirst: Binding<Bool>) -> some View {
+        let labels = (LibrarySort(rawValue: sort.wrappedValue) ?? .byTitle).directionTitles
+        LabeledContent(label) {
+            HStack {
+                Picker("", selection: sort) {
+                    ForEach(LibrarySort.options(for: section), id: \.self) { option in
+                        Text(option.title).tag(option.rawValue)
+                    }
+                }
+                .labelsHidden()
+                .fixedSize()
+                Spacer()
+                Toggle("Local First", isOn: localFirst)
+            }
+        }
+        HStack {
+            Spacer()
+            Picker("", selection: direction) {
+                Text(labels.ascending).tag(SortDirection.ascending.rawValue)
+                Text(labels.descending).tag(SortDirection.descending.rawValue)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+        }
     }
 }
 

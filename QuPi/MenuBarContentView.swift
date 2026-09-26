@@ -166,38 +166,91 @@ struct MenuBarContentView: View {
     private func section(for section: MenuSection) -> some View {
         // Filtered and sorted once per redraw, shared by the count and the carousel.
         let items = visibleItems(for: section)
-        Button {
-            // Rows are static headers while a search is active.
-            guard !appState.isSearchActive else { return }
-            withAnimation(.snappy(duration: 0.2)) {
-                appState.toggleExpansion(of: section)
-            }
-        } label: {
-            HStack {
-                Image(systemName: section.systemImage)
-                    .frame(width: 20)
-                Text(section.title)
-                Spacer()
-                if let count = items?.count {
-                    Text("\(count)")
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
+        // The sort menu sits between the title and the count, so the row is
+        // two buttons around it rather than one button containing a menu.
+        HStack(spacing: 6) {
+            Button { toggleRow(section) } label: {
+                HStack {
+                    Image(systemName: section.systemImage)
+                        .frame(width: 20)
+                    Text(section.title)
+                    Spacer()
                 }
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .rotationEffect(.degrees(isExpanded(section) ? 90 : 0))
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .buttonStyle(.plain)
+            .accessibilityValue(items.map { "\($0.count) items" } ?? "")
+            if section.mediaType != nil, isExpanded(section) {
+                sortMenu(for: section)
+            }
+            Button { toggleRow(section) } label: {
+                HStack {
+                    if let count = items?.count {
+                        Text("\(count)")
+                            .foregroundStyle(.secondary)
+                            .font(.caption)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isExpanded(section) ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            // Same action as the title button, which VoiceOver already reads.
+            .accessibilityHidden(true)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
 
         if isExpanded(section) {
             sectionContent(for: section, items: items)
                 .padding(.bottom, 10)
         }
+    }
+
+    private func toggleRow(_ section: MenuSection) {
+        // Rows are static headers while a search is active.
+        guard !appState.isSearchActive else { return }
+        withAnimation(.snappy(duration: 0.2)) {
+            appState.toggleExpansion(of: section)
+        }
+    }
+
+    /// Small sort button for an open Movies, TV Shows or Music row.
+    private func sortMenu(for section: MenuSection) -> some View {
+        @Bindable var appState = appState
+        let sort: Binding<String>, direction: Binding<String>
+        switch section {
+        case .tvShows: (sort, direction) = ($appState.tvSortRaw, $appState.tvSortDirectionRaw)
+        case .music: (sort, direction) = ($appState.musicSortRaw, $appState.musicSortDirectionRaw)
+        default: (sort, direction) = ($appState.movieSortRaw, $appState.movieSortDirectionRaw)
+        }
+        let labels = (LibrarySort(rawValue: sort.wrappedValue) ?? .byTitle).directionTitles
+        return Menu {
+            Picker("Sort By", selection: sort) {
+                ForEach(LibrarySort.options(for: section), id: \.self) { option in
+                    Text(option.title).tag(option.rawValue)
+                }
+            }
+            .pickerStyle(.inline)
+            Picker("Order", selection: direction) {
+                Text(labels.ascending).tag(SortDirection.ascending.rawValue)
+                Text(labels.descending).tag(SortDirection.descending.rawValue)
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Image(systemName: "arrow.up.arrow.down")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Sort \(section.title)")
+        .accessibilityLabel("Sort \(section.title)")
     }
 
     @ViewBuilder
