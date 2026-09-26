@@ -506,7 +506,6 @@ nonisolated enum SettingsKeys {
     }
 
     static let downloadIndicatorsEnabled = "downloadIndicatorsEnabled"
-    static let tmdbAPIKey = "tmdbAPIKey"
 
     static let movieLocalFirst = "movieLocalFirst"
     static let tvLocalFirst = "tvLocalFirst"
@@ -527,4 +526,7 @@ enum KeychainKeys {
     static let traktAccessToken = "traktAccessToken"
     static let traktRefreshToken = "traktRefreshToken"
     static let lastfmSessionKey = "lastfmSessionKey"
+    /// Same name as the UserDefaults key older builds used, so
+    /// KeychainStore.stringMigratingFromDefaults(for:) moves it over.
+    static let tmdbAPIKey = "tmdbAPIKey"
 }

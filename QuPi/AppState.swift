@@ -828,12 +828,7 @@ final class AppState {
     /// TMDb for items that don't have it yet. Idempotent: items that already
     /// have a posterURL are not re-scraped.
     func refreshLocalLibrary() async {
-        let defaults = UserDefaults.standard
-
-        let tmdbKey: String? = {
-            let v = defaults.string(forKey: SettingsKeys.tmdbAPIKey) ?? ""
-            return v.isEmpty ? nil : v
-        }()
+        let tmdbKey = KeychainStore.stringMigratingFromDefaults(for: KeychainKeys.tmdbAPIKey)
 
         let tmdb = tmdbKey.map { TMDbClient(apiKey: $0) }
         let lastfm = LastFMClient()

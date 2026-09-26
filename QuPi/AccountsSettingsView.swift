@@ -12,7 +12,6 @@ struct AccountsSettingsView: View {
     @AppStorage(SettingsKeys.jellyfinServerURL) private var jellyfinServerURL = ""
     @AppStorage(SettingsKeys.jellyfinUsername) private var jellyfinUsername = ""
     @AppStorage(SettingsKeys.jellyfinUserID) private var jellyfinUserID = ""
-    @AppStorage(SettingsKeys.tmdbAPIKey) private var tmdbAPIKey = ""
 
     // Connected Plex servers; tokens live in the Keychain, one per server.
     @State private var plexServers = PlexServerStore.load()
@@ -24,6 +23,7 @@ struct AccountsSettingsView: View {
     @State private var plexAccountToken = KeychainStore.string(for: KeychainKeys.plexAccountToken) ?? ""
     @State private var traktAccessToken = KeychainStore.string(for: KeychainKeys.traktAccessToken) ?? ""
     @State private var lastfmSessionKey: String? = KeychainStore.string(for: KeychainKeys.lastfmSessionKey)
+    @State private var tmdbAPIKey = KeychainStore.stringMigratingFromDefaults(for: KeychainKeys.tmdbAPIKey) ?? ""
 
     // Transient sign-in state.
     @State private var jellyfinPassword = ""
@@ -536,6 +536,11 @@ struct AccountsSettingsView: View {
     private var tmdbSection: some View {
         Section("The Movie Database") {
             TextField("API Key (v3)", text: $tmdbAPIKey)
+                .onChange(of: tmdbAPIKey) {
+                    // Saved on every edit so closing Settings never loses it;
+                    // an empty field removes the Keychain item.
+                    KeychainStore.set(tmdbAPIKey, for: KeychainKeys.tmdbAPIKey)
+                }
                 .task(id: tmdbAPIKey) { await checkTMDbKey() }
             tmdbKeyStatusLabel
                 .font(.callout)
