@@ -67,7 +67,7 @@ struct LibrariesSettingsView: View {
         Section {
             ForEach(MediaType.allCases) { type in
                 HStack {
-                    Label(type.rawValue, systemImage: type.systemImage)
+                    Label(type.title, systemImage: type.systemImage)
                     let countText = libraryCountText(for: type)
                     if !countText.isEmpty {
                         Text(countText)
@@ -143,7 +143,7 @@ struct LibrariesSettingsView: View {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
-        panel.prompt = "Use as \(type.rawValue) Library"
+        panel.prompt = "Use as \(type.title) Library"
         panel.directoryURL = DownloadManager.resolvedLibraryFolder(for: type)
         if panel.runModal() == .OK, let url = panel.url {
             DownloadManager.setLibraryFolder(url, for: type)

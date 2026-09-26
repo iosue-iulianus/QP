@@ -52,7 +52,7 @@ struct DataSettingsView: View {
     private func downloadRow(for type: MediaType) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                Label(type.rawValue, systemImage: type.systemImage)
+                Label(type.title, systemImage: type.systemImage)
                     .frame(width: 110, alignment: .leading)
                 Spacer()
                 TextField("Max", value: limitBinding(for: type), format: .number)
@@ -98,7 +98,7 @@ struct DataSettingsView: View {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
-        panel.prompt = "Use for \(type.rawValue) Downloads"
+        panel.prompt = "Use for \(type.title) Downloads"
         panel.directoryURL = DownloadManager.resolvedFolder(for: type)
         if panel.runModal() == .OK, let url = panel.url {
             DownloadManager.setFolder(url, for: type)
@@ -132,7 +132,7 @@ struct DataSettingsView: View {
 
     private var tvLevelRow: some View {
         VStack(alignment: .leading) {
-            Text("TV Shows")
+            Text("Shows")
             VStack(alignment: .leading, spacing: 8) {
                 Toggle("Series", isOn: levelBinding(.series))
                 Toggle("Season", isOn: levelBinding(.season))

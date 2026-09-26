@@ -46,7 +46,7 @@ struct VisualsSettingsView: View {
 
             Section {
                 Toggle("Movies", isOn: $sectionMovies)
-                Toggle("TV Shows", isOn: $sectionTVShows)
+                Toggle("Shows", isOn: $sectionTVShows)
                 Toggle("Music", isOn: $sectionMusic)
                 Toggle("Playlists", isOn: $sectionPlaylists)
                 Toggle("Continue…", isOn: $sectionContinue)
@@ -71,7 +71,7 @@ struct VisualsSettingsView: View {
             Section {
                 sortRow("Movies", section: .movies, sort: $appState.movieSortRaw,
                         direction: $appState.movieSortDirectionRaw, localFirst: $appState.movieLocalFirst)
-                sortRow("TV Shows", section: .tvShows, sort: $appState.tvSortRaw,
+                sortRow("Shows", section: .tvShows, sort: $appState.tvSortRaw,
                         direction: $appState.tvSortDirectionRaw, localFirst: $appState.tvLocalFirst)
                 sortRow("Music", section: .music, sort: $appState.musicSortRaw,
                         direction: $appState.musicSortDirectionRaw, localFirst: $appState.musicLocalFirst)

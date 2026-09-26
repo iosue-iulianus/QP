@@ -8,6 +8,16 @@ enum MediaType: String, CaseIterable, Identifiable, Codable {
 
     var id: String { rawValue }
 
+    /// Display name. The raw value ("TV Shows") stays unchanged because it
+    /// is part of saved settings keys and local item IDs.
+    var title: String {
+        switch self {
+        case .movies: "Movies"
+        case .tvShows: "Shows"
+        case .music: "Music"
+        }
+    }
+
     var systemImage: String {
         switch self {
         case .movies: "film"
@@ -31,7 +41,7 @@ enum MenuSection: String, CaseIterable, Identifiable, Codable {
     var title: String {
         switch self {
         case .movies: "Movies"
-        case .tvShows: "TV Shows"
+        case .tvShows: "Shows"
         case .music: "Music"
         case .playlists: "Playlists"
         case .continueItems: "Continue…"

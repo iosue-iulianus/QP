@@ -364,7 +364,7 @@ final class DownloadManager {
         guard Self.resolvedFolder(for: item.type) != nil else {
             Self.alert(
                 title: "No Download Folder",
-                message: "Choose a folder for \(item.type.rawValue) in Settings → Data → Downloads first."
+                message: "Choose a folder for \(item.type.title) in Settings → Data → Downloads first."
             )
             return
         }
@@ -441,7 +441,7 @@ final class DownloadManager {
             if showAlerts {
                 Self.alert(
                     title: "No Download Folder",
-                    message: "Choose a folder for \(item.type.rawValue) in Settings → Data → Downloads first."
+                    message: "Choose a folder for \(item.type.title) in Settings → Data → Downloads first."
                 )
             }
             return false
@@ -469,7 +469,7 @@ final class DownloadManager {
                         let formatter = ByteCountFormatter()
                         Self.alert(
                             title: "Not Enough Download Storage",
-                            message: "\(item.title) needs \(formatter.string(fromByteCount: max(expected, 0))), but \(item.type.rawValue) downloads are limited to \(formatter.string(fromByteCount: limit)) and \(formatter.string(fromByteCount: usage)) is already used. Increase the allocation in Settings → Data or remove other downloads."
+                            message: "\(item.title) needs \(formatter.string(fromByteCount: max(expected, 0))), but \(item.type.title) downloads are limited to \(formatter.string(fromByteCount: limit)) and \(formatter.string(fromByteCount: usage)) is already used. Increase the allocation in Settings → Data or remove other downloads."
                         )
                     }
                     return false

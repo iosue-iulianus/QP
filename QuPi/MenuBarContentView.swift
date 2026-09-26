@@ -218,7 +218,7 @@ struct MenuBarContentView: View {
         }
     }
 
-    /// Small sort button for an open Movies, TV Shows or Music row.
+    /// Small sort button for an open Movies, Shows or Music row.
     private func sortMenu(for section: MenuSection) -> some View {
         @Bindable var appState = appState
         let sort: Binding<String>, direction: Binding<String>
