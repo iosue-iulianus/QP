@@ -54,6 +54,20 @@ enum PlexServerStore {
         KeychainStore.set(token, for: KeychainKeys.plexServerToken(serverID))
     }
 
+    /// Makes `url` the server's primary address after the saved one failed,
+    /// keeping the old primary as the first fallback, so the next launch
+    /// doesn't wait for the dead address to time out again.
+    static func promote(_ url: URL, forServer id: String) {
+        var servers = load()
+        guard let index = servers.firstIndex(where: { $0.id == id }) else { return }
+        let old = servers[index].urlString
+        let new = url.absoluteString
+        guard old != new else { return }
+        servers[index].urlString = new
+        servers[index].fallbackURLStrings = [old] + (servers[index].fallbackURLStrings ?? []).filter { $0 != new && $0 != old }
+        save(servers)
+    }
+
     /// Removes a server and its Keychain token.
     static func remove(_ serverID: String) {
         save(load().filter { $0.id != serverID })
@@ -134,7 +148,11 @@ struct PlexClient {
             do {
                 let result = try await URLSession.shared.data(for: request)
                 if url != config.serverURL {
+                    // A fallback answered: try it first from now on.
+                    let old = config.serverURL
                     config.serverURL = url
+                    config.fallbackURLs = [old] + (config.fallbackURLs ?? []).filter { $0 != url && $0 != old }
+                    PlexServerStore.promote(url, forServer: config.serverID)
                 }
                 return result
             } catch {
