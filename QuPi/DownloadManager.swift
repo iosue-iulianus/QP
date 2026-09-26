@@ -124,18 +124,26 @@ final class DownloadManager {
             UserDefaults.standard.set(bookmark, forKey: bookmarkKey)
             UserDefaults.standard.set(url.path, forKey: pathKey)
         }
+        resolvedBookmarks[bookmarkKey] = nil
         shared.refreshAccess(bookmarkKey: bookmarkKey)
     }
 
+    /// Resolved folder URLs by bookmark key. Resolving a bookmark is a system
+    /// call, and folders are looked up for every poster on every redraw.
+    private static var resolvedBookmarks: [String: URL] = [:]
+
     private static func resolveBookmark(_ key: String) -> URL? {
+        if let cached = resolvedBookmarks[key] { return cached }
         guard let bookmark = UserDefaults.standard.data(forKey: key) else { return nil }
         var stale = false
-        return try? URL(
+        let url = try? URL(
             resolvingBookmarkData: bookmark,
             options: .withSecurityScope,
             relativeTo: nil,
             bookmarkDataIsStale: &stale
         )
+        resolvedBookmarks[key] = url
+        return url
     }
 
     static let mediaExtensions: Set<String> = [
@@ -287,15 +295,23 @@ final class DownloadManager {
         folder.appending(path: ".qp-downloads.json")
     }
 
+    /// Parsed indexes by folder path. The app is the only writer of these
+    /// files, so the cache is kept current by writeIndex(_:to:).
+    private static var indexCache: [String: [String: DownloadIndexEntry]] = [:]
+
     private static func readIndexFromFolder(_ folder: URL) -> [String: DownloadIndexEntry] {
-        let url = indexURL(in: folder)
-        guard let data = try? Data(contentsOf: url) else { return [:] }
-        return (try? JSONDecoder().decode([String: DownloadIndexEntry].self, from: data)) ?? [:]
+        if let cached = indexCache[folder.path] { return cached }
+        let index = (try? Data(contentsOf: indexURL(in: folder)))
+            .flatMap { try? JSONDecoder().decode([String: DownloadIndexEntry].self, from: $0) } ?? [:]
+        indexCache[folder.path] = index
+        return index
     }
 
     private static func writeIndex(_ index: [String: DownloadIndexEntry], to folder: URL) {
+        indexCache[folder.path] = index
         guard let data = try? JSONEncoder().encode(index) else { return }
-        try? data.write(to: indexURL(in: folder))
+        // Atomic so a crash mid-write can't leave a truncated index behind.
+        try? data.write(to: indexURL(in: folder), options: .atomic)
     }
 
     static func indexedEntries(for type: MediaType) -> [DownloadIndexEntry] {
