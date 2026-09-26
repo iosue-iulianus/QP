@@ -734,21 +734,13 @@ struct PlexClient {
                 let address: String
                 let port: Int
                 let networkProtocol: String
-                let relay: Bool
+                /// Missing from older server responses.
+                let relay: Bool?
+                var isRelay: Bool { relay ?? false }
 
                 enum CodingKeys: String, CodingKey {
                     case uri, local, address, port, relay
                     case networkProtocol = "protocol"
-                }
-
-                init(from decoder: Decoder) throws {
-                    let c = try decoder.container(keyedBy: CodingKeys.self)
-                    uri = try c.decode(String.self, forKey: .uri)
-                    local = try c.decode(Bool.self, forKey: .local)
-                    address = try c.decode(String.self, forKey: .address)
-                    port = try c.decode(Int.self, forKey: .port)
-                    networkProtocol = try c.decode(String.self, forKey: .networkProtocol)
-                    relay = try c.decodeIfPresent(Bool.self, forKey: .relay) ?? false
                 }
             }
             let name: String
@@ -767,7 +759,7 @@ struct PlexClient {
                 // Sort: local non-relay first, then remote non-relay, then relay last.
                 let sorted = (resource.connections ?? []).sorted {
                     if $0.local != $1.local { return $0.local }
-                    if $0.relay != $1.relay { return !$0.relay }
+                    if $0.isRelay != $1.isRelay { return !$0.isRelay }
                     return false
                 }
                 // For each connection emit the direct-IP URL before the plex.direct URI
@@ -777,7 +769,7 @@ struct PlexClient {
                 var seen = Set<String>()
                 var validURLs: [URL] = []
                 for connection in sorted {
-                    if !connection.relay, !connection.address.isEmpty {
+                    if !connection.isRelay, !connection.address.isEmpty {
                         for scheme in ["http", "https"] {
                             if let url = URL(string: "\(scheme)://\(connection.address):\(connection.port)"),
                                seen.insert(url.absoluteString).inserted {
