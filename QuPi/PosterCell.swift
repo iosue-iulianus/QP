@@ -43,11 +43,13 @@ struct PosterCell: View {
         Button(action: action) {
             if simpleVisuals {
                 compactBox
+                    .overlay(alignment: .topTrailing) { watchedBadge }
                     .overlay(alignment: .bottomTrailing) { downloadButton }
                     .overlay(alignment: .bottomLeading) { infoButton }
             } else {
                 VStack(alignment: .leading, spacing: 4) {
                     poster
+                        .overlay(alignment: .topTrailing) { watchedBadge }
                         .overlay(alignment: .bottomTrailing) { downloadButton }
                         .overlay(alignment: .bottomLeading) { infoButton }
                     MarqueeText(text: displayTitle, font: isCompact ? .system(size: 11) : .caption)
@@ -63,6 +65,39 @@ struct PosterCell: View {
         .animation(.snappy(duration: 0.15), value: isHovering)
         .onHover { isHovering = $0 }
         .help(item.title)
+    }
+
+    /// Checkmark for watched items. White on a dark disc (like the other
+    /// poster controls) so it isn't confused with the green "Downloaded" mark.
+    @ViewBuilder
+    private var watchedBadge: some View {
+        if appState.watchIndicator(for: item).isWatched {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.white, .black.opacity(0.55))
+                .font(.system(size: isCompact || simpleVisuals ? 10 : 14))
+                .padding(isCompact ? 2 : 3)
+                .help("Watched")
+                .accessibilityLabel("Watched")
+        }
+    }
+
+    /// Thin bar along the bottom edge showing how far a partly watched item got.
+    @ViewBuilder
+    private var watchProgressBar: some View {
+        if let fraction = appState.watchIndicator(for: item).fraction {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.black.opacity(0.55))
+                    Capsule().fill(.tint)
+                        .frame(width: geo.size.width * fraction)
+                }
+            }
+            .frame(height: isCompact ? 2 : 3)
+            .padding(.horizontal, 6)
+            .padding(.bottom, 4)
+            .allowsHitTesting(false)
+            .accessibilityLabel("\(Int(fraction * 100))% watched")
+        }
     }
 
     @ViewBuilder
@@ -136,6 +171,7 @@ struct PosterCell: View {
         .frame(width: cellWidth, alignment: .topLeading)
         .background(isHovering ? .tertiary : .quaternary,
                     in: RoundedRectangle(cornerRadius: 8))
+        .overlay(alignment: .bottom) { watchProgressBar }
         .overlay {
             if let progress = DownloadManager.shared.downloadProgress[item.id] {
                 Color.black.opacity(0.4)
@@ -176,6 +212,7 @@ struct PosterCell: View {
         }
         .frame(width: cellWidth, height: cellHeight)
         .clipShape(.rect(cornerRadius: 8))
+        .overlay(alignment: .bottom) { watchProgressBar }
         .overlay {
             if let progress = DownloadManager.shared.downloadProgress[item.id] {
                 Color.black.opacity(0.65)

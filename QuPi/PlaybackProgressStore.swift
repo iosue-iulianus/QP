@@ -14,8 +14,8 @@ struct PlaybackProgress: Codable {
 /// essentially finished (>92%) — for any backend, including the sample
 /// catalog.
 enum PlaybackProgressStore {
-    private static let startedFraction = 0.05
-    private static let finishedFraction = 0.92
+    static let startedFraction = 0.05
+    static let finishedFraction = 0.92
 
     static func all() -> [PlaybackProgress] {
         let timeout = UserDefaults.standard.string(forKey: SettingsKeys.continueTimeout)

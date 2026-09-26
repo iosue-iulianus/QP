@@ -7,6 +7,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Watched indicators on Plex posters: a checkmark on watched movies and episodes (and on shows and seasons once every episode is watched), and a progress bar on ones in progress. Playback in QuPi updates them straight away, and when playback stops the section and any open season or show list refresh in the background, so a show gets its checkmark after its last episode.
 - Settings > Accounts shows the signed-in Plex account (username, email and a green "Signed In") with a Sign Out… button, instead of the "Sign In with Plex…" button. Signing out asks for confirmation, then removes the account and the servers connected through it. Test Connection says which address it connected to.
 
 ### Changed

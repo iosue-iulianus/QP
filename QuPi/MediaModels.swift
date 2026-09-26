@@ -354,6 +354,12 @@ struct MediaItem: Identifiable, Hashable, Codable {
     var addedAt: Date?
     /// Total play count. Nil when the backend does not report it.
     var playCount: Int?
+    /// Whether the server reports this as fully watched (for shows and
+    /// seasons: every episode). Nil when the backend does not report it.
+    var isWatched: Bool?
+    /// How far through a partly watched item the server says playback got
+    /// (0–1). Nil when not in progress or not reported.
+    var watchedFraction: Double?
 
     /// Release year when the subtitle carries one (used for Trakt matching).
     var year: Int? {

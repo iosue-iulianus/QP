@@ -279,6 +279,7 @@ struct PlexClient {
         let index: Int?
         let parentIndex: Int?
         let leafCount: Int?
+        let viewedLeafCount: Int?
         let parentTitle: String?
         let parentRatingKey: String?
         let parentThumb: String?
@@ -292,6 +293,8 @@ struct PlexClient {
         let originallyAvailableAt: String?
         let addedAt: Int?
         let viewCount: Int?
+        let viewOffset: Int?
+        let duration: Int?
         let librarySectionID: Int?
         let Director: [Tag]?
         let Role: [Tag]?
@@ -302,6 +305,24 @@ struct PlexClient {
     private struct MetadataResponse: Decodable {
         struct Container: Decodable { let Metadata: [Metadata]? }
         let MediaContainer: Container
+    }
+
+    /// Watched state as Plex reports it. Shows and seasons compare watched
+    /// episodes to total episodes; movies and episodes use the resume offset
+    /// (in progress) or the play count (finished). Music isn't tracked.
+    private static func watchState(of entry: Metadata) -> (isWatched: Bool?, fraction: Double?) {
+        switch entry.type {
+        case "show", "season":
+            guard let leafCount = entry.leafCount, leafCount > 0 else { return (nil, nil) }
+            return (entry.viewedLeafCount == leafCount, nil)
+        case "movie", "episode":
+            if let offset = entry.viewOffset, let duration = entry.duration, duration > 0, offset > 0 {
+                return (false, min(Double(offset) / Double(duration), 1))
+            }
+            return ((entry.viewCount ?? 0) > 0, nil)
+        default:
+            return (nil, nil)
+        }
     }
 
     /// Plex numeric metadata types for /all queries.
@@ -341,7 +362,9 @@ struct PlexClient {
                     "year": entry.year.map(String.init) ?? "" // Recoverable offline
                 ],
                 addedAt: entry.addedAt.map { Date(timeIntervalSince1970: TimeInterval($0)) },
-                playCount: entry.viewCount
+                playCount: entry.viewCount,
+                isWatched: Self.watchState(of: entry).isWatched,
+                watchedFraction: Self.watchState(of: entry).fraction
             )
         }
     }
@@ -404,7 +427,9 @@ struct PlexClient {
                     "grandparentRatingKey": entry.grandparentRatingKey ?? "",
                     "grandparentPosterURL": entry.grandparentThumb.map(imageURL(thumbPath:))?.absoluteString ?? "",
                     "year": entry.year.map(String.init) ?? "" // Recoverable offline
-                ]
+                ],
+                isWatched: Self.watchState(of: entry).isWatched,
+                watchedFraction: Self.watchState(of: entry).fraction
             )
         }
     }
@@ -513,7 +538,9 @@ struct PlexClient {
                 "releaseDate": entry.originallyAvailableAt ?? "",
                 "originalPath": entry.Media?.first?.Part?.first?.file ?? "",
                 "year": entry.year.map(String.init) ?? "" // Recoverable offline
-            ]
+            ],
+            isWatched: Self.watchState(of: entry).isWatched,
+            watchedFraction: Self.watchState(of: entry).fraction
         )
     }
 

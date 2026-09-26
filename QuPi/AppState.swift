@@ -23,6 +23,12 @@ final class AppState {
     var loadingChildrenIDs: Set<String> = []
     var childErrorsByItemID: [String: String] = [:]
 
+    /// Watch progress from playback in this session, so posters update
+    /// without reloading the catalog. Takes precedence over the server's
+    /// watched state carried on each item.
+    private(set) var sessionWatchProgress: [String: Double] = [:]
+    private(set) var sessionWatchedIDs: Set<String> = []
+
     init() {
         PlaybackProgressStore.removeSavedPlexTokens()
         setupMediaKeys()
@@ -404,6 +410,18 @@ final class AppState {
         errorsBySection[section] = nil
         defer { loadingSections.remove(section) }
 
+        let (items, failures) = await fetchCatalog(for: section)
+        itemsBySection[section] = items
+        // Only surface errors when nothing loaded; partial results win.
+        errorsBySection[section] = items.isEmpty && !failures.isEmpty ? failures.joined(separator: " • ") : nil
+        // Deep-search matches are placed by the section items they belong
+        // to, so redo the search once this section's items are known.
+        if isSearchActive, !trimmedQuery.isEmpty { scheduleDeepSearch() }
+    }
+
+    /// Fetches a section's items from its sources. Local items are dropped
+    /// when a server item with the same id exists.
+    private func fetchCatalog(for section: MenuSection) async -> (items: [MediaItem], failures: [String]) {
         // Query every source at once; results come back in source order so
         // the merged list is stable.
         let sources: [(provider: any MediaProvider, library: MediaLibrary?)]
@@ -442,12 +460,61 @@ final class AppState {
         // entry would be a duplicate.
         let serverIDs = Set(serverItems.map(\.id))
         let items = serverItems + localItems.filter { !serverIDs.contains($0.id) }
+        return (items, failures)
+    }
+
+    // MARK: - Background refresh
+
+    /// Re-fetches a loaded section without the loading spinner, keeping the
+    /// current posters until fresh data arrives. Keeps the existing items if
+    /// any source fails.
+    func refreshSilently(_ section: MenuSection) async {
+        guard itemsBySection[section] != nil, !loadingSections.contains(section) else { return }
+        let (items, failures) = await fetchCatalog(for: section)
+        guard failures.isEmpty else { return }
         itemsBySection[section] = items
-        // Only surface errors when nothing loaded; partial results win.
-        errorsBySection[section] = items.isEmpty && !failures.isEmpty ? failures.joined(separator: " • ") : nil
-        // Deep-search matches are placed by the section items they belong
-        // to, so redo the search once this section's items are known.
-        if isSearchActive, !trimmedQuery.isEmpty { scheduleDeepSearch() }
+    }
+
+    /// Re-fetches a cached drill-down (e.g. a show's seasons) in place.
+    private func refreshChildrenSilently(of container: MediaItem) async {
+        guard childrenByItemID[container.id] != nil,
+              let provider = provider(for: container),
+              let children = try? await provider.children(of: container) else { return }
+        childrenByItemID[container.id] = children
+    }
+
+    /// Finds an already-loaded item by id in the catalog or cached drill-downs.
+    private func loadedItem(withID id: String) -> MediaItem? {
+        for items in itemsBySection.values {
+            if let match = items.first(where: { $0.id == id }) { return match }
+        }
+        for items in childrenByItemID.values {
+            if let match = items.first(where: { $0.id == id }) { return match }
+        }
+        return nil
+    }
+
+    /// Once playback of a Plex movie or episode stops, the server's watched
+    /// state may have changed beyond the item itself (a season or show is
+    /// now fully watched), so refresh the loaded sections of that type and
+    /// the cached season and show lists that contain it. Waits briefly so
+    /// Plex has processed the final timeline report.
+    private func refreshAfterPlayback(of item: MediaItem) {
+        guard item.source == .plex, item.type != .music else { return }
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            for section in itemsBySection.keys where section.mediaType == item.type {
+                await refreshSilently(section)
+            }
+            let containerIDs = [item.parentID, item.attributes["grandparentRatingKey"]]
+                .compactMap { $0 }
+                .filter { !$0.isEmpty }
+            for id in containerIDs {
+                if let container = loadedItem(withID: id) {
+                    await refreshChildrenSilently(of: container)
+                }
+            }
+        }
     }
 
     /// Bumped whenever the connected Plex servers (or their tokens) change,
@@ -781,6 +848,32 @@ final class AppState {
         return siblings[index + 1]
     }
 
+    // MARK: - Watched state
+
+    /// What a poster should show: a checkmark when watched, a progress bar
+    /// fraction when partly watched. Playback in this session wins over the
+    /// server's (possibly stale) state.
+    func watchIndicator(for item: MediaItem) -> (isWatched: Bool, fraction: Double?) {
+        if let fraction = sessionWatchProgress[item.id] {
+            return (false, fraction)
+        }
+        if sessionWatchedIDs.contains(item.id) {
+            return (true, nil)
+        }
+        return (item.isWatched == true, item.watchedFraction)
+    }
+
+    private func recordSessionWatchProgress(item: MediaItem, positionSeconds: Double, durationSeconds: Double) {
+        guard durationSeconds > 0, item.type != .music, !item.kind.isExpandable else { return }
+        let fraction = positionSeconds / durationSeconds
+        if fraction >= PlaybackProgressStore.finishedFraction {
+            sessionWatchProgress[item.id] = nil
+            sessionWatchedIDs.insert(item.id)
+        } else if fraction >= PlaybackProgressStore.startedFraction {
+            sessionWatchProgress[item.id] = fraction
+        }
+    }
+
     // MARK: - Playback reporting
 
     /// Fans playback state out to the local Continue… store, the item's
@@ -788,6 +881,10 @@ final class AppState {
     /// Last.fm (music).
     func reportPlayback(item: MediaItem, state: PlaybackState, positionSeconds: Double, durationSeconds: Double) {
         PlaybackProgressStore.update(item: item, positionSeconds: positionSeconds, durationSeconds: durationSeconds)
+        recordSessionWatchProgress(item: item, positionSeconds: positionSeconds, durationSeconds: durationSeconds)
+        if state == .stopped {
+            refreshAfterPlayback(of: item)
+        }
         if itemsBySection[.continueItems] != nil {
             itemsBySection[.continueItems] = continueDisplayItems()
         }
