@@ -1,4 +1,3 @@
-#if os(macOS)
 import Foundation
 
 /// Scans a local library folder and parses its contents into a MediaItem
@@ -372,4 +371,3 @@ struct LocalLibraryScanner {
         return stem
     }
 }
-#endif

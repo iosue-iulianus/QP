@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 
 /// The dropdown shown when the menu bar icon is clicked: a row per enabled
@@ -333,4 +332,3 @@ struct MenuBarContentView: View {
         .padding(.top, 6)
     }
 }
-#endif // os(macOS)

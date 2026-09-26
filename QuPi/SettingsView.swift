@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 
 struct SettingsView: View {
@@ -34,5 +33,4 @@ struct SettingsView: View {
     SettingsView()
         .environment(AppState())
 }
-#endif
 #endif

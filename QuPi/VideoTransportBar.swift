@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 
 /// Full-width bottom transport bar for the VLC video player at normal (non-PiP)
@@ -109,4 +108,3 @@ struct VideoTransportBar: View {
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 }
-#endif

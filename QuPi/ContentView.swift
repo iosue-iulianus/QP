@@ -6,7 +6,6 @@ import SwiftUI
     @State private var appState = AppState()
 
     var body: some Scene {
-#if os(macOS)
         MenuBarExtra {
             MenuBarContentView()
                 .environment(appState)
@@ -37,11 +36,5 @@ import SwiftUI
             SettingsView()
                 .environment(appState)
         }
-#else
-        WindowGroup {
-            Text("QuPi runs as a macOS menu bar app.")
-                .padding()
-        }
-#endif
     }
 }

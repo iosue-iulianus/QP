@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 
 /// Navigation (what the TV/Music sections list at their top level) and
@@ -159,5 +158,4 @@ struct VisualsSettingsView: View {
         .environment(AppState())
         .frame(width: 520, height: 560)
 }
-#endif
 #endif

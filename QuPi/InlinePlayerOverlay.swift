@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 
 /// PiP-style playback controls overlaid on the now-playing carousel cell's
@@ -116,4 +115,3 @@ struct InlinePlayerOverlay: View {
         .glassEffect()
     }
 }
-#endif // os(macOS)

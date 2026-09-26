@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import AppKit
 import ServiceManagement
@@ -84,5 +83,4 @@ struct GeneralSettingsView: View {
     GeneralSettingsView()
         .frame(width: 520, height: 560)
 }
-#endif
 #endif

@@ -1,4 +1,3 @@
-#if os(macOS)
 import CoreGraphics
 
 /// Display-crop options for the video player. `.original` keeps the video's
@@ -31,4 +30,3 @@ enum VideoCrop: String, CaseIterable, Identifiable {
         }
     }
 }
-#endif

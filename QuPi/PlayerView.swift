@@ -773,7 +773,6 @@ private struct MusicPlayerLayout: View {
 
 // MARK: - Window pinning
 
-#if os(macOS)
 /// Manages window-level settings: pin behavior, toolbar visibility (while maintaining size),
 /// and video aspect ratio locking.
 private struct WindowLevelAccessor: NSViewRepresentable {
@@ -1113,9 +1112,3 @@ private class ClickCaptureView: NSView {
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
-#else
-private struct WindowLevelAccessor: View {
-    let isPinned: Bool
-    var body: some View { EmptyView() }
-}
-#endif

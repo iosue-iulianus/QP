@@ -2,12 +2,10 @@ import Foundation
 import Observation
 import AVFoundation
 import MediaPlayer
-#if os(macOS)
 import AppKit
-#endif
 
 /// Shared app state managing UI sections, drill-down paths, and catalogs.
-/// Merges Plex, Jellyfin, or a built-in sample fallback.
+/// Merges Plex, Jellyfin and local library providers.
 @MainActor
 @Observable
 final class AppState {
@@ -31,9 +29,7 @@ final class AppState {
         Task {
             if providers.isEmpty {
                 UserDefaults.standard.set("accounts", forKey: "selectedSettingsTab")
-#if os(macOS)
                 NSApplication.shared.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-#endif
             }
         }
     }
@@ -867,7 +863,6 @@ final class AppState {
     /// TMDb for items that don't have it yet. Idempotent: items that already
     /// have a posterURL are not re-scraped.
     func refreshLocalLibrary() async {
-        #if os(macOS)
         let defaults = UserDefaults.standard
 
         let tmdbKey: String? = {
@@ -941,7 +936,6 @@ final class AppState {
         }
 
         resetCatalog()
-        #endif
     }
 
     // MARK: - Playback service (shared audio engine for inline and popout modes)

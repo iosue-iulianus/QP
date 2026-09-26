@@ -1,4 +1,3 @@
-#if os(macOS)
 import Foundation
 
 /// Serves locally downloaded media from the per-type folders configured in
@@ -228,4 +227,3 @@ struct LocalMediaProvider: MediaProvider {
         }
     }
 }
-#endif // os(macOS)

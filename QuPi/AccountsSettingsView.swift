@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import AuthenticationServices
 
@@ -527,4 +526,3 @@ private struct CopyableCodeRow: View {
         .font(.callout)
     }
 }
-#endif

@@ -1,4 +1,3 @@
-#if os(macOS)
 import Network
 import Observation
 
@@ -41,4 +40,3 @@ final class LocalNetworkAccessMonitor {
         browser = nil
     }
 }
-#endif

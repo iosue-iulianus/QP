@@ -41,12 +41,10 @@ final class VLCPlayerBridge {
     /// is decoded. Mirrors `Player.videoSize` without requiring a SwiftVLC import.
     var videoSize: CGSize? { player.videoSize }
 
-#if os(macOS)
     /// Maps a `VideoCrop` selection onto the VLC engine.
     func setCrop(_ crop: VideoCrop) {
         player.aspectRatio = crop == .original ? .default : .fill
     }
-#endif
 
     // MARK: - Playback control
 

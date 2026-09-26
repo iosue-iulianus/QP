@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 
 /// Horizontal, swipeable poster carousel. Width and paging adapt to the
@@ -183,4 +182,3 @@ struct MediaCarouselView: View {
         onPrevious?()
     }
 }
-#endif // os(macOS)

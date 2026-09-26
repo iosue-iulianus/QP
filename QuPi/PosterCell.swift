@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 
 /// One cell in the carousel: artwork with title and subtitle, or a compact
@@ -253,4 +252,3 @@ struct MarqueeText: View {
         }
     }
 }
-#endif // os(macOS)

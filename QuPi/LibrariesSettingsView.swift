@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import AppKit
 
@@ -226,4 +225,3 @@ struct LibrariesSettingsView: View {
         }
     }
 }
-#endif

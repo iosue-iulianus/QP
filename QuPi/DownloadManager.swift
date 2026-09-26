@@ -1,4 +1,3 @@
-#if os(macOS)
 import AppKit
 import Observation
 
@@ -777,4 +776,3 @@ final class DownloadManager {
         alert.runModal()
     }
 }
-#endif // os(macOS)

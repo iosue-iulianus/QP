@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 
 struct PlaybackSettingsView: View {
@@ -50,5 +49,4 @@ struct PlaybackSettingsView: View {
         .environment(AppState())
         .frame(width: 520, height: 560)
 }
-#endif
 #endif

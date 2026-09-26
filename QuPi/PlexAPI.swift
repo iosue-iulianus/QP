@@ -1,4 +1,3 @@
-#if os(macOS)
 import Foundation
 import VideoToolbox
 
@@ -887,4 +886,3 @@ struct PlexMediaProvider: MediaProvider {
         try await client.randomTrack(sameArtistAs: item).map(tagged)
     }
 }
-#endif // os(macOS)

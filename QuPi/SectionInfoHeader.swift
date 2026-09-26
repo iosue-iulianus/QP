@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 
 /// A section header label with a trailing info button that opens a popover
@@ -27,4 +26,3 @@ struct SectionInfoHeader: View {
         }
     }
 }
-#endif

@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 
 /// Offline downloads (per-type folders and storage allocations) and the
@@ -171,4 +170,3 @@ struct DataSettingsView: View {
             : "Empty"
     }
 }
-#endif // os(macOS)
