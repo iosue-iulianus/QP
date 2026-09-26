@@ -64,43 +64,47 @@ struct LibrariesSettingsView: View {
         .onChange(of: jellyfinSelected) { appState.resetCatalog() }
     }
 
-    /// Drag to reorder the menu's sections (or use the context menu). A
-    /// bordered list, since rows in a grouped Form can't be dragged on macOS.
-    /// Hidden sections are listed too, so they land in the right place when
-    /// shown.
+    /// Drag to reorder the menu's sections (or use the context menu). Plain
+    /// Form rows like the rest of Settings; drag and drop uses
+    /// draggable/dropDestination, since onMove doesn't work in a grouped
+    /// Form on macOS. Hidden sections are listed too, so they land in the
+    /// right place when shown.
     private var menuOrderSection: some View {
         Section {
             let sections = appState.orderableSections
-            List {
-                ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
-                    HStack {
-                        Image(systemName: "line.3.horizontal")
-                            .foregroundStyle(.tertiary)
-                            .accessibilityHidden(true)
-                        Label(section.title, systemImage: section.systemImage)
-                        Spacer()
-                        if !appState.enabledSections.contains(section) {
-                            Text("Hidden")
-                                .foregroundStyle(.secondary)
-                        }
+            ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
+                HStack {
+                    Label(section.title, systemImage: section.systemImage)
+                    Spacer()
+                    if !appState.enabledSections.contains(section) {
+                        Text("Hidden")
+                            .foregroundStyle(.secondary)
                     }
-                    .contextMenu {
-                        Button("Move to Top") { move(sections, from: index, to: 0) }
-                            .disabled(index == 0)
-                        Button("Move Up") { move(sections, from: index, to: index - 1) }
-                            .disabled(index == 0)
-                        Button("Move Down") { move(sections, from: index, to: index + 2) }
-                            .disabled(index == sections.count - 1)
-                        Button("Move to Bottom") { move(sections, from: index, to: sections.count) }
-                            .disabled(index == sections.count - 1)
-                    }
+                    Image(systemName: "line.3.horizontal")
+                        .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
                 }
-                .onMove { source, destination in
-                    appState.moveSections(sections, fromOffsets: source, toOffset: destination)
+                .contentShape(Rectangle())
+                .draggable(section.id)
+                .dropDestination(for: String.self) { ids, _ in
+                    guard let id = ids.first,
+                          let from = sections.firstIndex(where: { $0.id == id }),
+                          from != index else { return false }
+                    // Dropping on a row takes that row's place.
+                    move(sections, from: from, to: from < index ? index + 1 : index)
+                    return true
+                }
+                .contextMenu {
+                    Button("Move to Top") { move(sections, from: index, to: 0) }
+                        .disabled(index == 0)
+                    Button("Move Up") { move(sections, from: index, to: index - 1) }
+                        .disabled(index == 0)
+                    Button("Move Down") { move(sections, from: index, to: index + 2) }
+                        .disabled(index == sections.count - 1)
+                    Button("Move to Bottom") { move(sections, from: index, to: sections.count) }
+                        .disabled(index == sections.count - 1)
                 }
             }
-            .listStyle(.bordered(alternatesRowBackgrounds: true))
-            .frame(height: CGFloat(min(max(sections.count, 1), 8)) * 26 + 6)
             if !appState.sectionOrder.isEmpty {
                 Button("Reset to Default Order") {
                     appState.sectionOrder = []
