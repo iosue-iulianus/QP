@@ -48,7 +48,7 @@ Preferences are read from `UserDefaults` via `SettingsKeys` and secrets from the
 
 1. One `PlexMediaProvider` per configured server (`PlexServerStore`, token per server in the Keychain)
 2. `JellyfinMediaProvider`, if configured
-3. `LocalMediaProvider`, only when a library folder contains media (`hasContent`)
+3. `LocalMediaProvider`, when a library or download folder is set (`hasContent`)
 
 In Offline Mode only `LocalMediaProvider` is used. There is no sample provider; `MediaSource.sample` is a leftover default.
 

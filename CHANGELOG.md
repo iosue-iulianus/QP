@@ -26,4 +26,5 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Offline Mode showed nothing when you had downloads but no library folder set, because only library folders counted as local content.
 - `.gitignore` pointed to `QuPi/QuPi/Secrets.swift` instead of `QuPi/Secrets.swift`, so the secrets file was committed upstream.

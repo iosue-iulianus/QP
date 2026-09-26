@@ -65,11 +65,13 @@ struct LocalMediaProvider: MediaProvider {
 
     // MARK: - Content check
 
-    /// True when a library folder is set, used by AppState to decide
-    /// whether to register this provider. Deliberately a settings lookup,
-    /// not a scan: AppState.providers runs on every catalog access.
+    /// True when a library or download folder is set, used by AppState to
+    /// decide whether to register this provider. Deliberately a settings
+    /// lookup, not a scan: AppState.providers runs on every catalog access.
     var hasContent: Bool {
-        MediaType.allCases.contains { DownloadManager.libraryFolderPath(for: $0) != nil }
+        MediaType.allCases.contains {
+            DownloadManager.libraryFolderPath(for: $0) != nil || DownloadManager.folderPath(for: $0) != nil
+        }
     }
 
     // MARK: - Enrichment (Offline Metadata Recovery)
