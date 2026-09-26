@@ -259,14 +259,27 @@ enum LibrarySort: String, CaseIterable {
     case byDateAdded
     case byPlays
 
-    /// True when `a` comes before `b` in ascending order.
-    func ascending(_ a: MediaItem, _ b: MediaItem) -> Bool {
+    /// True when `a` comes before `b`. Items without the value (no year or
+    /// date added) go last in either direction.
+    func areInOrder(_ a: MediaItem, _ b: MediaItem, descending: Bool) -> Bool {
         switch self {
-        case .byArtist: (a.subtitle ?? a.title).localizedCompare(b.subtitle ?? b.title) == .orderedAscending
-        case .byTitle: a.title.localizedCompare(b.title) == .orderedAscending
-        case .byYear: (a.sortableYear ?? Int.max) < (b.sortableYear ?? Int.max)
-        case .byDateAdded: (a.addedAt ?? .distantFuture) < (b.addedAt ?? .distantFuture)
-        case .byPlays: (a.playCount ?? 0) < (b.playCount ?? 0)
+        case .byArtist: Self.order(a.subtitle ?? a.title, b.subtitle ?? b.title, descending)
+        case .byTitle: Self.order(a.title, b.title, descending)
+        case .byYear: Self.order(a.sortableYear, b.sortableYear, descending)
+        case .byDateAdded: Self.order(a.addedAt, b.addedAt, descending)
+        case .byPlays: Self.order(a.playCount ?? 0, b.playCount ?? 0, descending)
+        }
+    }
+
+    private static func order(_ a: String, _ b: String, _ descending: Bool) -> Bool {
+        a.localizedCompare(b) == (descending ? .orderedDescending : .orderedAscending)
+    }
+
+    private static func order<T: Comparable>(_ a: T?, _ b: T?, _ descending: Bool) -> Bool {
+        switch (a, b) {
+        case let (a?, b?): descending ? a > b : a < b
+        case (.some, nil): true
+        case (nil, _): false
         }
     }
 }

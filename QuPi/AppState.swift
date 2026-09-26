@@ -173,16 +173,17 @@ final class AppState {
 
     // Sort preferences are stored (not UserDefaults-computed) so @Observable
     // can track changes and re-render displayedItems reactively without a catalog reload.
-    var movieSortRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.movieSort) ?? LibrarySort.byTitle.rawValue {
+    // Movies and TV default to newest additions first.
+    var movieSortRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.movieSort) ?? LibrarySort.byDateAdded.rawValue {
         didSet { UserDefaults.standard.set(movieSortRaw, forKey: SettingsKeys.movieSort) }
     }
-    var movieSortDirectionRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.movieSortDirection) ?? SortDirection.ascending.rawValue {
+    var movieSortDirectionRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.movieSortDirection) ?? SortDirection.descending.rawValue {
         didSet { UserDefaults.standard.set(movieSortDirectionRaw, forKey: SettingsKeys.movieSortDirection) }
     }
-    var tvSortRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.tvSort) ?? LibrarySort.byTitle.rawValue {
+    var tvSortRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.tvSort) ?? LibrarySort.byDateAdded.rawValue {
         didSet { UserDefaults.standard.set(tvSortRaw, forKey: SettingsKeys.tvSort) }
     }
-    var tvSortDirectionRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.tvSortDirection) ?? SortDirection.ascending.rawValue {
+    var tvSortDirectionRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.tvSortDirection) ?? SortDirection.descending.rawValue {
         didSet { UserDefaults.standard.set(tvSortDirectionRaw, forKey: SettingsKeys.tvSortDirection) }
     }
     var musicSortRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.musicSort) ?? LibrarySort.byTitle.rawValue {
@@ -510,7 +511,7 @@ final class AppState {
         let sort = LibrarySort(rawValue: sortRaw) ?? .byTitle
         let descending = SortDirection(rawValue: directionRaw) == .descending
         var sorted = items.sorted { a, b in
-            descending ? sort.ascending(b, a) : sort.ascending(a, b)
+            sort.areInOrder(a, b, descending: descending)
         }
         if applyLocalFirst {
             let downloadedIDs = section.mediaType.flatMap { DownloadManager.shared.downloadedIDs[$0] } ?? []
