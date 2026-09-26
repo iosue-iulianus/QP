@@ -538,7 +538,8 @@ struct PlexClient {
             URLQueryItem(name: "height", value: "600"),
             URLQueryItem(name: "minSize", value: "1"),
             URLQueryItem(name: "url", value: thumbPath),
-            URLQueryItem(name: "X-Plex-Token", value: config.token),
+            // No token here: these URLs are saved (Continue list, download
+            // index). ArtworkCache sends the token as a header instead.
         ]
         return components.url!
     }

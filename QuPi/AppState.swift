@@ -24,6 +24,7 @@ final class AppState {
     var childErrorsByItemID: [String: String] = [:]
 
     init() {
+        PlaybackProgressStore.removeSavedPlexTokens()
         setupMediaKeys()
         
         Task {
@@ -85,6 +86,10 @@ final class AppState {
         if let cachedSources { return cachedSources }
         let loaded = (plex: Self.loadPlexConfigurations(), jellyfin: Self.loadJellyfinConfiguration())
         cachedSources = loaded
+        let tokens = loaded.plex.flatMap { configuration in
+            ([configuration.serverURL] + (configuration.fallbackURLs ?? [])).map { (ArtworkCache.addressKey($0), configuration.token) }
+        }
+        ArtworkCache.setPlexTokens(Dictionary(tokens, uniquingKeysWith: { first, _ in first }))
         return loaded
     }
 

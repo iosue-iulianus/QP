@@ -338,6 +338,33 @@ struct MediaItem: Identifiable, Hashable, Codable {
     }
 }
 
+extension URL {
+    /// This URL without an `X-Plex-Token` query item.
+    var removingPlexToken: URL {
+        guard var components = URLComponents(url: self, resolvingAgainstBaseURL: false),
+              let items = components.queryItems,
+              items.contains(where: { $0.name == "X-Plex-Token" }) else { return self }
+        let kept = items.filter { $0.name != "X-Plex-Token" }
+        components.queryItems = kept.isEmpty ? nil : kept
+        return components.url ?? self
+    }
+}
+
+extension MediaItem {
+    /// A copy with Plex tokens removed from its artwork URLs, for saving.
+    /// Older builds put the token in poster URLs, which then landed in
+    /// UserDefaults and the download index in plain text.
+    var removingPlexTokens: MediaItem {
+        var item = self
+        item.posterURL = posterURL?.removingPlexToken
+        item.parentPosterURL = parentPosterURL?.removingPlexToken
+        if let url = attributes["grandparentPosterURL"].flatMap(URL.init(string:)) {
+            item.attributes["grandparentPosterURL"] = url.removingPlexToken.absoluteString
+        }
+        return item
+    }
+}
+
 // MARK: - Providers
 
 /// Abstracts where media comes from so the UI works identically with the

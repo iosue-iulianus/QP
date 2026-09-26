@@ -80,6 +80,10 @@ final class DownloadManager {
                     dirty = true
                 }
             }
+            // Older builds saved Plex tokens in poster URLs; writeIndex strips them.
+            if index.values.contains(where: { $0.item != $0.item.removingPlexTokens }) {
+                dirty = true
+            }
             if dirty { Self.writeIndex(index, to: folder) }
         }
     }
@@ -308,6 +312,7 @@ final class DownloadManager {
     }
 
     private static func writeIndex(_ index: [String: DownloadIndexEntry], to folder: URL) {
+        let index = index.mapValues { DownloadIndexEntry(item: $0.item.removingPlexTokens, filename: $0.filename) }
         indexCache[folder.path] = index
         guard let data = try? JSONEncoder().encode(index) else { return }
         // Atomic so a crash mid-write can't leave a truncated index behind.
@@ -631,7 +636,7 @@ final class DownloadManager {
     private func downloadArtwork(from posterURL: URL, stem: String, destinationFolder: URL) async {
         let preferredExt = posterURL.pathExtension.lowercased() == "png" ? "png" : "jpg"
         do {
-            let (tempURL, response) = try await URLSession.shared.download(from: posterURL)
+            let (tempURL, response) = try await URLSession.shared.download(for: ArtworkCache.request(for: posterURL))
             var finalExt = preferredExt
             if let mime = response.mimeType {
                 if mime.contains("png") { finalExt = "png" }

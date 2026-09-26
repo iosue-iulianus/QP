@@ -1,5 +1,6 @@
 import Foundation
 import ImageIO
+import Synchronization
 import SwiftUI
 
 /// URL sessions for poster loading. The persistent one keeps artwork in a
@@ -31,6 +32,27 @@ nonisolated enum ArtworkCache {
         persistentSession.configuration.urlCache?.currentDiskUsage ?? 0
     }
 
+    /// Plex tokens by server address ("host:port"). Poster URLs are stored
+    /// without the token, so it is added as a header when loading them.
+    private static let plexTokens = Mutex<[String: String]>([:])
+
+    static func setPlexTokens(_ tokens: [String: String]) {
+        plexTokens.withLock { $0 = tokens }
+    }
+
+    static func addressKey(_ url: URL) -> String {
+        "\(url.host() ?? ""):\(url.port ?? 0)"
+    }
+
+    /// A request for artwork at `url`, authenticated when it's on a Plex server.
+    static func request(for url: URL) -> URLRequest {
+        var request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad)
+        if let token = plexTokens.withLock({ $0[addressKey(url)] }) {
+            request.setValue(token, forHTTPHeaderField: "X-Plex-Token")
+        }
+        return request
+    }
+
     static func clear() {
         persistentSession.configuration.urlCache?.removeAllCachedResponses()
         ephemeralSession.configuration.urlCache?.removeAllCachedResponses()
@@ -40,8 +62,7 @@ nonisolated enum ArtworkCache {
     /// full-size poster doesn't sit in memory at original resolution.
     @concurrent
     static func image(at url: URL) async -> CGImage? {
-        let request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad)
-        guard let (data, _) = try? await session.data(for: request),
+        guard let (data, _) = try? await session.data(for: request(for: url)),
               let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         // ponytail: fixed 600 px cap covers the largest view (280 pt music artwork @2x).
         let options: [CFString: Any] = [
