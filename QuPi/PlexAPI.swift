@@ -22,6 +22,18 @@ final class PlexConfiguration {
 
 /// A connected Plex server. The list lives in UserDefaults; each server's
 /// token is a separate Keychain item so no secrets are stored alongside.
+enum PlexError: LocalizedError {
+    case unauthorized
+    case http(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .unauthorized: "Plex rejected the sign-in token. Reconnect the server in Settings > Accounts."
+        case .http(let status): "The Plex server returned an error (HTTP \(status))."
+        }
+    }
+}
+
 struct PlexServer: Codable, Identifiable, Hashable {
     let id: String
     var name: String
@@ -145,21 +157,34 @@ struct PlexClient {
             request.setValue(Self.clientIdentifier, forHTTPHeaderField: "X-Plex-Client-Identifier")
             request.setValue(Self.productName, forHTTPHeaderField: "X-Plex-Product")
             
+            let result: (Data, URLResponse)
             do {
-                let result = try await URLSession.shared.data(for: request)
-                if url != config.serverURL {
-                    // A fallback answered: try it first from now on.
-                    let old = config.serverURL
-                    config.serverURL = url
-                    config.fallbackURLs = [old] + (config.fallbackURLs ?? []).filter { $0 != url && $0 != old }
-                    PlexServerStore.promote(url, forServer: config.serverID)
-                }
-                return result
+                result = try await URLSession.shared.data(for: request)
             } catch {
+                // Unreachable at this address: try the next one.
                 lastError = error
+                continue
             }
+            if url != config.serverURL {
+                // A fallback answered: try it first from now on.
+                let old = config.serverURL
+                config.serverURL = url
+                config.fallbackURLs = [old] + (config.fallbackURLs ?? []).filter { $0 != url && $0 != old }
+                PlexServerStore.promote(url, forServer: config.serverID)
+            }
+            // The server answered, so an HTTP error is final: the other
+            // addresses reach the same server.
+            try Self.validate(result.1)
+            return result
         }
         throw lastError ?? URLError(.badURL)
+    }
+
+    /// Turns non-2xx responses into readable errors instead of letting them
+    /// surface later as JSON decoding failures.
+    private static func validate(_ response: URLResponse) throws {
+        guard let status = (response as? HTTPURLResponse)?.statusCode, !(200..<300).contains(status) else { return }
+        throw status == 401 ? PlexError.unauthorized : PlexError.http(status)
     }
 
     func libraries() async throws -> [PlexLibrary] {
@@ -726,17 +751,19 @@ struct PlexClient {
     /// Non-strong pins are the short 4-character codes that page expects
     /// (strong pins are long codes for the app.plex.tv/auth OAuth flow).
     static func requestPIN() async throws -> PIN {
-        let (data, _) = try await URLSession.shared.data(
+        let (data, response) = try await URLSession.shared.data(
             for: plexTVRequest(path: "/api/v2/pins", method: "POST")
         )
+        try validate(response)
         return try JSONDecoder().decode(PIN.self, from: data)
     }
 
     /// Step 2: poll until `authToken` is non-nil, meaning the PIN was linked.
     static func checkPIN(id: Int) async throws -> PIN {
-        let (data, _) = try await URLSession.shared.data(
+        let (data, response) = try await URLSession.shared.data(
             for: plexTVRequest(path: "/api/v2/pins/\(id)", method: "GET")
         )
+        try validate(response)
         return try JSONDecoder().decode(PIN.self, from: data)
     }
 
@@ -769,7 +796,8 @@ struct PlexClient {
         }
         var request = plexTVRequest(path: "/api/v2/resources?includeHttps=1", method: "GET")
         request.setValue(accountToken, forHTTPHeaderField: "X-Plex-Token")
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response)
         let resources = try JSONDecoder().decode([Resource].self, from: data)
         return resources
             .filter { $0.provides.contains("server") }
