@@ -36,6 +36,10 @@ struct AccountsSettingsView: View {
     @State private var jellyfinStatus = ""
     @State private var quickConnectCode: String?
     @State private var quickConnectTask: Task<Void, Never>?
+    @State private var tmdbKeyStatus: KeyStatus?
+
+    /// Result of checking the TMDb key against the API.
+    private enum KeyStatus { case checking, valid, invalid, unreachable }
     @State private var traktStatus = ""
     @State private var lastfmStatus = ""
     @State private var plexSignInTask: Task<Void, Never>?
@@ -532,10 +536,62 @@ struct AccountsSettingsView: View {
     private var tmdbSection: some View {
         Section("The Movie Database") {
             TextField("API Key (v3)", text: $tmdbAPIKey)
+                .task(id: tmdbAPIKey) { await checkTMDbKey() }
+            tmdbKeyStatusLabel
+                .font(.callout)
             Text("Used to fetch posters and metadata when refreshing your Local Library. Get a free API key at themoviedb.org/settings/api.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    @ViewBuilder
+    private var tmdbKeyStatusLabel: some View {
+        switch tmdbKeyStatus {
+        case nil:
+            EmptyView()
+        case .checking:
+            Label("Checking key…", systemImage: "hourglass")
+                .foregroundStyle(.secondary)
+        case .valid:
+            Label("Key is valid.", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case .invalid:
+            // The v4 "API Read Access Token" is a JWT; this app uses the v3 key.
+            Label(tmdbAPIKey.hasPrefix("eyJ")
+                  ? "That's the API Read Access Token. Paste the API Key (v3) instead."
+                  : "TMDb rejected this key. Check that it's copied in full.",
+                  systemImage: "xmark.circle.fill")
+                .foregroundStyle(.red)
+        case .unreachable:
+            Label("Couldn't reach TMDb to check the key.", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        }
+    }
+
+    /// Checks the TMDb key once typing pauses. Runs from `.task(id:)`, so a
+    /// newer edit cancels an older check.
+    private func checkTMDbKey() async {
+        let key = tmdbAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if key != tmdbAPIKey {
+            // Pasted keys often carry a stray space or newline, which TMDb rejects.
+            tmdbAPIKey = key
+            return
+        }
+        guard !key.isEmpty else {
+            tmdbKeyStatus = nil
+            return
+        }
+        tmdbKeyStatus = .checking
+        do { try await Task.sleep(for: .milliseconds(600)) } catch { return }
+        let status: KeyStatus
+        do {
+            status = try await TMDbClient.isValidKey(key) ? .valid : .invalid
+        } catch {
+            status = .unreachable
+        }
+        guard !Task.isCancelled else { return }
+        tmdbKeyStatus = status
     }
 
     // MARK: - Helpers
