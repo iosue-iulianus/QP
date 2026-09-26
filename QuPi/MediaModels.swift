@@ -338,6 +338,15 @@ struct MediaItem: Identifiable, Hashable, Codable {
     }
 }
 
+/// The URLs to try for a server address typed by the user. Without a
+/// scheme ("jellyfin.example.com"), HTTPS comes first and plain HTTP
+/// second; an explicit scheme is kept as the only candidate.
+func serverURLCandidates(_ input: String) -> [URL] {
+    let address = input.trimmingCharacters(in: .whitespacesAndNewlines)
+    let strings = address.contains("://") ? [address] : ["https://\(address)", "http://\(address)"]
+    return strings.compactMap(URL.init(string:)).filter { $0.host() != nil }
+}
+
 extension URL {
     /// This URL without an `X-Plex-Token` query item.
     var removingPlexToken: URL {

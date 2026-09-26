@@ -233,14 +233,18 @@ struct AccountsSettingsView: View {
     }
 
     private func addManualPlexServer() {
-        guard let url = normalizedURL(from: manualPlexServerURL), url.host() != nil else {
+        let candidates = serverURLCandidates(manualPlexServerURL)
+        guard let url = candidates.first else {
             plexStatus = "Enter a valid server URL."
             return
         }
+        // Without a scheme, HTTP is kept as a fallback; the first request
+        // promotes whichever address answers.
         let server = PlexServer(
             id: UUID().uuidString,
             name: url.host() ?? "Plex Server",
-            urlString: url.absoluteString
+            urlString: url.absoluteString,
+            fallbackURLStrings: candidates.dropFirst().map(\.absoluteString)
         )
         plexServers.append(server)
         plexServerTokens[server.id] = ""
@@ -313,24 +317,37 @@ struct AccountsSettingsView: View {
     private func signInToJellyfin() {
         jellyfinStatus = "Signing in…"
         Task {
-            do {
-                guard let url = normalizedURL(from: jellyfinServerURL) else {
-                    jellyfinStatus = "Invalid server URL."
-                    return
-                }
-                let result = try await JellyfinClient.authenticate(
-                    serverURL: url,
-                    username: jellyfinUsername,
-                    password: jellyfinPassword
-                )
-                KeychainStore.set(result.token, for: KeychainKeys.jellyfinToken)
-                jellyfinUserID = result.userID
-                jellyfinPassword = ""
-                jellyfinStatus = ""
-                appState.resetCatalog()
-            } catch {
-                jellyfinStatus = "Sign-in failed: \(error.localizedDescription)"
+            let candidates = serverURLCandidates(jellyfinServerURL)
+            guard !candidates.isEmpty else {
+                jellyfinStatus = "Invalid server URL."
+                return
             }
+            var lastError: Error?
+            for url in candidates {
+                do {
+                    let result = try await JellyfinClient.authenticate(
+                        serverURL: url,
+                        username: jellyfinUsername,
+                        password: jellyfinPassword
+                    )
+                    // Save the address that worked, scheme included.
+                    jellyfinServerURL = url.absoluteString
+                    KeychainStore.set(result.token, for: KeychainKeys.jellyfinToken)
+                    jellyfinUserID = result.userID
+                    jellyfinPassword = ""
+                    jellyfinStatus = ""
+                    appState.resetCatalog()
+                    return
+                } catch let error as URLError where error.code == .userAuthenticationRequired {
+                    // The server answered and rejected the credentials, so
+                    // the other scheme won't help.
+                    jellyfinStatus = "Sign-in failed: wrong username or password."
+                    return
+                } catch {
+                    lastError = error
+                }
+            }
+            jellyfinStatus = "Sign-in failed: \(lastError?.localizedDescription ?? "server not reachable.")"
         }
     }
 
@@ -453,14 +470,6 @@ struct AccountsSettingsView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
-    }
-
-    private func normalizedURL(from string: String) -> URL? {
-        var str = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !str.starts(with: "http://") && !str.starts(with: "https://") {
-            str = "http://" + str
-        }
-        return URL(string: str)
     }
 
     private func webAuth(url: URL, callbackScheme: String) async throws -> URL {

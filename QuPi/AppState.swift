@@ -119,7 +119,9 @@ final class AppState {
         let defaults = UserDefaults.standard
         guard let urlString = defaults.string(forKey: SettingsKeys.jellyfinServerURL),
               !urlString.isEmpty,
-              let url = URL(string: urlString),
+              // Sign-in saves the working URL; this also covers addresses
+              // saved without a scheme by older builds.
+              let url = serverURLCandidates(urlString).first,
               let userID = defaults.string(forKey: SettingsKeys.jellyfinUserID), !userID.isEmpty,
               let token = KeychainStore.string(for: KeychainKeys.jellyfinToken), !token.isEmpty else {
             return nil
