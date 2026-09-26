@@ -21,6 +21,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+				Secrets.swift.template,
 			);
 			target = 000000000000000100000000 /* QP */;
 		};

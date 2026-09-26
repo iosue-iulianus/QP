@@ -41,3 +41,13 @@ Have used Gemini and Claude to help me build this; though all the prototyping, t
 ## Getting Started
 *   Download the DMG
 *   Package is currently unsigned, so you'll need to do the usual 2 step shuffle in Security settings
+
+## Building from Source
+1.  Clone the repo.
+2.  Create your local secrets file from the template (it is gitignored, so it never gets committed):
+
+    ```sh
+    cp QuPi/Secrets.swift.template QuPi/Secrets.swift
+    ```
+3.  Optional: fill in your own Trakt and Last.fm API keys in `QuPi/Secrets.swift`. The placeholders are fine if you don't need scrobbling.
+4.  Open `QuPi.xcodeproj` in Xcode and build.
