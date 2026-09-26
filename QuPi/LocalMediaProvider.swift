@@ -16,14 +16,19 @@ struct LocalMediaProvider: MediaProvider {
     func items(for type: MediaType) async throws -> [MediaItem] {
         let entries = DownloadManager.libraryIndexedEntries(for: type) + DownloadManager.indexedEntries(for: type)
         var indexedIDs = Set<String>()
+        var filenames: [String: String] = [:]
         let indexed = entries.compactMap { entry -> MediaItem? in
             guard entry.filename != nil || entry.item.kind.isExpandable else { return nil }
             if !indexedIDs.insert(entry.item.id).inserted { return nil }
-            return localised(entry.item, filename: entry.filename)
+            filenames[entry.item.id] = entry.filename
+            return entry.item
         }
         let dropped = unindexedItems(for: type, excluding: indexedIDs)
+        // Pick the top level first so artwork is only looked up (several
+        // file checks each) for the items shown, not every episode/track.
         let top = topLevel(of: indexed + dropped, type: type)
-        
+            .map { localised($0, filename: filenames[$0.id]) }
+
         // Enrich items with extracted offline metadata before returning
         return enrich(items: top, allEntries: entries)
     }
