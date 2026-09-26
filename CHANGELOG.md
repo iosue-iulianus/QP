@@ -7,27 +7,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- A small sort button on open Movies, TV Shows and Music rows in the menu, for choosing the sort field and order without opening Settings. Order labels match the field (for example "Newest First" for dates instead of "Z -> A"), here and in Settings > Visuals.
-- The TMDb API key field in Settings > Accounts checks the key with TMDb as you type and shows whether it is valid. It points out when the v4 Read Access Token was pasted instead of the v3 API Key, and trims stray spaces from pasted keys.
+- One menu section per server library, named as on the server (see Changed).
 - Jellyfin Quick Connect: in Settings > Accounts, click Quick Connect, then enter the code shown on any device already signed in to Jellyfin. No password needed. Requires Jellyfin 10.9 or later with Quick Connect enabled.
+- A small sort button on every open movie, show and music section in the menu, for choosing the sort field and order without opening Settings. Order labels match the field (for example "Newest First" for dates instead of "Z -> A"), here and in Settings > Visuals.
+- The TMDb API key field in Settings > Accounts checks the key with TMDb as you type and shows whether it is valid. It points out when the v4 Read Access Token was pasted instead of the v3 API Key, and trims stray spaces from pasted keys.
 - Build without Xcode: `Package.swift` builds the app with SwiftPM using only the Command Line Tools, and `build.sh` wraps the result in `dist/QuPi.app`, signs it and launches it.
 
 ### Changed
 
 - The menu shows one section per server library, named as on the server, instead of fixed Movies, TV Shows and Music sections. A Jellyfin "YouTube" library now gets its own section instead of being mixed into TV Shows. Libraries with the same name and type on different servers share a section, and local library folders join the section named "Movies", "Shows" or "Music". Choose which libraries appear in Settings > Libraries; the Movies/TV Shows/Music toggles in Settings > Visuals are gone.
-- Online, downloads appear only in their server's sections (with the green tick); on their own they show in Offline Mode.
 - "TV Shows" is called "Shows" throughout the app.
+- Movies and shows are sorted by date added, newest first, by default. Items without a year or date added now sort last in either direction instead of jumping to the top.
+- Online, downloads appear only in their server's sections (with the green tick); on their own they show in Offline Mode.
 - Search results are placed in the library they belong to, and no longer include matches from libraries you excluded in Settings > Libraries.
-- Movies and TV Shows are sorted by date added, newest first, by default. Items without a year or date added now sort last in either direction instead of jumping to the top.
-- The TMDb API key is stored in the Keychain instead of in plain text in the app's preferences. A key saved earlier is moved over automatically the first time it is read.
 - Minimum macOS version lowered from 27 to 26 (Tahoe).
 - Posters now load through a new `ArtworkImage` view instead of `AsyncImage(request:)` and `.asyncImageURLSession(_:)`, which only exist on macOS 27. Images are decoded and downsampled off the main thread, and the "Cache Artwork Locally" setting still applies.
-- Xcode previews (`#Preview`) are skipped in SwiftPM builds, since previews only work in Xcode. They still work in the Xcode project.
-- `.gitignore` now excludes the SwiftPM build output (`.build/` and `dist/`).
 - Faster menu and browsing: server settings and download indexes are kept in memory instead of being re-read from the Keychain and disk on every redraw, sources load in parallel, and inline music playback no longer redraws every poster twice a second.
 - A Plex server address that works after the saved one fails is remembered, so later requests and launches no longer wait for the dead address to time out.
+- The TMDb API key is stored in the Keychain instead of in plain text in the app's preferences. A key saved earlier is moved over automatically the first time it is read.
+- Jellyfin sign-in says "wrong username or password" when the server rejects the credentials, instead of a generic network error.
 - Download indexes are written atomically, so a crash mid-write can't corrupt them.
 - The menu header says "No sources" instead of "Sample catalog" when no server is connected, since there is no sample catalog.
+- Xcode previews (`#Preview`) are skipped in SwiftPM builds, since previews only work in Xcode. They still work in the Xcode project.
+- `.gitignore` now excludes the SwiftPM build output (`.build/` and `dist/`).
 
 ### Removed
 
@@ -43,3 +45,4 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Plex errors are now readable. A rejected token or a server error used to appear as a confusing "data couldn't be read" message because the HTTP status was never checked.
 - Offline Mode showed nothing when you had downloads but no library folder set, because only library folders counted as local content.
 - `.gitignore` pointed to `QuPi/QuPi/Secrets.swift` instead of `QuPi/Secrets.swift`, so the secrets file was committed upstream.
+- `CLAUDE.md` (developer notes) was copied into `QuPi.app` by the Xcode build.
