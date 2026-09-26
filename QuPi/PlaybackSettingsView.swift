@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 
 struct PlaybackSettingsView: View {
@@ -44,6 +43,7 @@ struct PlaybackSettingsView: View {
     }
 }
 
+#if !SWIFT_PACKAGE // Previews need Xcode; SwiftPM builds skip them.
 #Preview("Playback") {
     PlaybackSettingsView()
         .environment(AppState())

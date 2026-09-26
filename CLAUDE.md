@@ -4,83 +4,99 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build & Verify
 
-Use Xcode MCP tools when available (preferred over generic shell commands):
+Two build paths. Both must keep working.
 
-- **Build**: `BuildProject` MCP tool
-- **Check diagnostics after edits**: `XcodeRefreshCodeIssuesInFile` (fast, no full build needed)
-- **Inspect build errors**: `GetBuildLog` MCP tool
-- **Read/write project files**: Use `XcodeRead` / `XcodeUpdate` / `XcodeWrite` (paths are workspace-relative, e.g. `QuPi/QuPi/Foo.swift`). Note: `XcodeUpdate` does not always flush to disk for pre-existing files — verify with a filesystem `Read` after editing, and fall back to the filesystem `Edit` tool if needed.
+- **SwiftPM (no Xcode needed):** `./build.sh` builds, bundles `dist/QuPi.app`, ad-hoc signs and launches it. `./build.sh build` skips the launch. Compile only: `swift build -c release --disable-keychain`.
+- **Xcode:** `QuPi.xcodeproj`. When Xcode MCP tools are available, prefer `BuildProject`, `XcodeRefreshCodeIssuesInFile` and `GetBuildLog`. Project paths are `QuPi/<File>.swift`. `XcodeUpdate` does not always flush to disk; verify with a filesystem `Read` and fall back to `Edit`.
 
-There is no test target and no linter configuration in this project.
+Build settings live in two places and must stay in sync: `Package.swift` (`swiftSettings`) and the target in `project.pbxproj`. Both use Swift 5 language mode, default actor isolation `MainActor`, and the upcoming features `InferIsolatedConformances`, `NonisolatedNonsendingByDefault`, `MemberImportVisibility` and bare-slash regex literals.
+
+There is no test target and no linter.
+
+## Platform constraints
+
+- Deployment target is **macOS 26**. Do not use APIs introduced in macOS 27 (for example `AsyncImage(request:)` or `.asyncImageURLSession(_:)`). Load artwork with `ArtworkImage` (`ArtworkCache.swift`).
+- The app is macOS-only (`SUPPORTED_PLATFORMS = macosx`). Do not add iOS code paths.
+- `#Preview` blocks must be wrapped in `#if !SWIFT_PACKAGE`, because the Command Line Tools lack the previews macro plugin.
+- `QuPi/Secrets.swift` (Trakt and Last.fm credentials) is gitignored. Never commit it or print its values. The README has a template.
+
+## Concurrency
+
+Everything is `MainActor` by default. Work that must run off the main thread (image decoding, file scans, JSON decoding of large indexes) needs an explicit `@concurrent` function on a `nonisolated` type or member. Types used from such code (for example `SettingsKeys`) must be `nonisolated`.
 
 ## Architecture
 
-QuPi is a **macOS-only menu bar app**. The entry point (`ContentView.swift`) declares:
+QuPi is a macOS menu bar app. `ContentView.swift` declares:
 - A `MenuBarExtra` (dropdown UI via `MenuBarContentView`)
-- Two `WindowGroup` scenes keyed on `MediaItem`: `"video-player"` (780×460) and `"music-player"` (340×660)
+- Two `WindowGroup` scenes keyed on `MediaItem`: `"video-player"` (780x460) and `"music-player"` (340x660)
 - A `Settings` scene hosting `SettingsView`
 
-### Central state — `AppState`
+### Central state: `AppState`
 
 `AppState` is a `@MainActor @Observable final class` passed as an `@Environment` to all views. It owns:
 - The catalog (`itemsBySection`, `drillPath`, `childrenByItemID`)
-- Search state and debounced deep-search task
-- Playback reporting (fans out to server timeline APIs and scrobblers)
-- Auto-continue logic (next movie / next episode / next track)
+- Search state and the debounced deep-search task
+- The playback engine (`AVPlayer` or `VLCPlayerBridge`) shared by inline and window playback
+- Playback reporting (server timeline APIs, scrobblers, Now Playing)
+- Auto-continue (next movie / next episode / next track)
 
-All preference reads go through `UserDefaults` via `SettingsKeys` (non-secret) or `KeychainStore` via `KeychainKeys` (tokens/secrets). There is no SwiftData or CoreData.
+Preferences are read from `UserDefaults` via `SettingsKeys` and secrets from the Keychain via `KeychainStore` + `KeychainKeys`. There is no SwiftData or Core Data.
 
-### MediaProvider protocol
+### MediaProvider
 
-`MediaProvider` (defined in `MediaModels.swift`) abstracts where content comes from. `AppState.providers` assembles an ordered list each time it's called:
+`MediaProvider` (in `MediaModels.swift`) abstracts content sources. `AppState.providers` builds the list on every access:
 
-1. One `PlexMediaProvider` per configured server
-2. `JellyfinMediaProvider` (if configured)
-3. `LocalMediaProvider` — serves locally downloaded files; only registered when it `hasContent`
-4. `SampleMediaProvider` — fallback when no server and no local content
+1. One `PlexMediaProvider` per configured server (`PlexServerStore`, token per server in the Keychain)
+2. `JellyfinMediaProvider`, if configured
+3. `LocalMediaProvider`, when a library folder is set (`hasContent`)
 
-Adding a new backend means conforming to `MediaProvider` and inserting the provider in `AppState.providers`.
+In Offline Mode only `LocalMediaProvider` is used, with `includeDownloads: true`; online it serves library folders only, since downloads already appear (with a green tick) in their server's sections. There is no sample provider; `MediaSource.sample` is kept only so old saved data decodes.
 
-**De-duplication**: local items are filtered against server item IDs so a downloaded file doesn't appear twice when the originating server is connected.
+Items from multiple Plex servers are routed back to their server via the `plexServerID` attribute (`PlexMediaProvider.serverIDAttribute`). Local items are de-duplicated against server item IDs in `AppState.load`.
+
+### Menu sections
+
+`MenuSection` is built from data, not a fixed list. `AppState.loadLibrarySections()` asks every provider for `libraries()` and makes one section per library name and type, in provider order; libraries with the same name and type on different servers share a section. `LocalMediaProvider` reports one pseudo-library per media type named `MediaType.title` ("Movies", "Shows", "Music"), so local media joins a server library with that name. `sectionLibraries` maps each section to its provider libraries, and `load(_:)` calls `items(inLibrary:)` for each. Playlists and Continue… are the only fixed sections. Sort settings are per media type, not per section. `resetCatalog()` reloads the sections.
+
+`MediaType.rawValue` ("TV Shows") is part of saved settings keys and local item IDs; show `MediaType.title` ("Shows") to users.
 
 ### Media hierarchy
 
 ```
 MediaType (movies / tvShows / music)
-  └─ MediaKind (movie | show → season → episode | artist → album → track | playlist)
+  +- MediaKind (movie | show > season > episode | artist > album > track | playlist)
 ```
 
-`MediaKind.isExpandable` determines whether tapping opens a child carousel (drill-down) or launches the player. The drill path per section lives in `AppState.drillPath`.
+`MediaKind.isExpandable` decides whether selecting an item opens a child carousel or starts playback. The drill path per section lives in `AppState.drillPath`.
 
-### Settings structure
+### Downloads and local library
 
-`SettingsView` is a `TabView` with six tabs: General, Accounts, Libraries, Visuals, Playback, Data. Each tab is its own `View` struct in its own file.
+`DownloadManager.shared` handles two kinds of folders per media type, each stored as a security-scoped bookmark:
+- **Download folder** (`downloadFolderBookmark_*`): files downloaded from servers, indexed in `.qp-downloads.json` inside the folder.
+- **Library folder** (`libraryFolderBookmark_*`): the user's own media, scanned by `LocalLibraryScanner` and enriched with artwork by `AppState.refreshLocalLibrary()` (Last.fm, Trakt, TMDb).
 
-- **Accounts**: Plex (multi-server via `PlexServerStore` + Keychain) and Jellyfin sign-in, plus Trakt and Last.fm scrobbler credentials.
-- **Libraries**: Plex/Jellyfin library multi-select (stored as comma-joined strings in `SettingsKeys`), plus a Local Library section showing per-type folder and usage.
-- **Data → Downloads**: Per-type download folder (security-scoped bookmark via `DownloadManager.setFolder(_:for:)`), storage cap, and download-level toggles (`DownloadLevel` enum maps to `MediaKind`).
+`DownloadManager.localURL(for:)` is checked first by `AppState.streamURL`, so downloaded items play from disk.
 
-### Downloads & local playback
+### Caches to keep consistent
 
-`DownloadManager` (singleton `shared`) manages:
-- Security-scoped folder bookmarks stored in `UserDefaults` (sandbox-compatible)
-- A JSON index per type tracking downloaded items and their relative paths
-- Storage usage and the `localURL(for:)` lookup used by `AppState.streamURL`
-
-`LocalMediaProvider` reads the index and also scans for unindexed files dropped manually into the folder.
+- `AppState` caches the Plex and Jellyfin configurations (Keychain reads are slow). Call `resetCatalog()` (or `plexServersChanged()`) after any account or server change.
+- `DownloadManager` caches resolved folder bookmarks and parsed indexes. Change folders only through `setFolder`/`setLibraryFolder` and write indexes only through `writeIndex(_:to:)`.
+- Views must not read `appState.currentTime` in large containers (carousels, the menu); it changes twice a second during playback. Read it in the smallest view that shows it.
 
 ### Playback
 
-`PlayerView` hosts either `AVPlayer` (for AVFoundation-compatible containers) or `VLCPlayerBridge` (libVLC, for MKV/AVI/etc.). `isAVFoundationPlayable(_:)` in `MediaModels.swift` decides which engine to use based on file extension; network URLs always use AVFoundation.
+`isAVFoundationPlayable(_:)` picks the engine: `AVPlayer` for network URLs and mp4/mov/m4v/common audio files, `VLCPlayerBridge` (SwiftVLC, libVLC linked statically) for everything else, such as mkv and avi.
 
-Playback position is persisted by `PlaybackProgressStore` (UserDefaults-backed) and drives the **Continue…** section. The `ContinueMusicGrouping` preference collapses in-progress tracks into their parent album/playlist cell.
+`PlaybackProgressStore` (UserDefaults) persists positions and drives the Continue... section. `ContinueMusicGrouping` collapses in-progress tracks into their album or playlist.
 
 ### Scrobbling
 
-`ScrobbleClients.swift` implements Trakt (movies) and Last.fm (music) reporting. Called from `AppState.scrobble(item:state:progressPercent:)` on playback state transitions (not on periodic `.playing` ticks).
+`ScrobbleClients.swift` implements Trakt (movies) and Last.fm (music). `AppState.scrobble` is called on state transitions only, not on the periodic `.playing` reports.
 
-### Key naming / style notes
+## Conventions
 
-- All `@Observable` classes must be `@MainActor`.
-- Settings keys are centralised in `SettingsKeys` (UserDefaults) and `KeychainKeys` (Keychain) — add new keys there, not as inline string literals.
+- All `@Observable` classes are `@MainActor`.
+- New settings keys go in `SettingsKeys` or `KeychainKeys`, never as inline string literals.
+- Never put tokens in URLs that get saved (poster URLs end up in UserDefaults and download indexes). Load Plex artwork through `ArtworkCache.request(for:)`, which adds the token as a header.
 - The app name is **QuPi**. Avoid "QuickPlex" in user-facing strings and comments.
+- Every user-visible change updates `CHANGELOG.md` and, when it changes what the fork offers or how to build it, the "About this fork" section of `README.md`, in the same commit.

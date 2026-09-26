@@ -1,24 +1,6 @@
 import Foundation
 import CryptoKit
 
-// MARK: - Secrets check
-
-// Secrets.swift is created from Secrets.swift.template, which ships with
-// "YOUR_…" placeholders. Sign-in is disabled until real keys are filled in.
-extension TraktSecrets {
-    static var isConfigured: Bool {
-        !clientID.isEmpty && !clientID.hasPrefix("YOUR_")
-            && !clientSecret.isEmpty && !clientSecret.hasPrefix("YOUR_")
-    }
-}
-
-extension LastFMSecrets {
-    static var isConfigured: Bool {
-        !apiKey.isEmpty && !apiKey.hasPrefix("YOUR_")
-            && !sharedSecret.isEmpty && !sharedSecret.hasPrefix("YOUR_")
-    }
-}
-
 // MARK: - Trakt
 
 /// Trakt.tv client using OAuth browser-redirect flow. Credentials are embedded

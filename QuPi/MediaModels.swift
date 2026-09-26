@@ -8,6 +8,16 @@ enum MediaType: String, CaseIterable, Identifiable, Codable {
 
     var id: String { rawValue }
 
+    /// Display name. The raw value ("TV Shows") stays unchanged because it
+    /// is part of saved settings keys and local item IDs.
+    var title: String {
+        switch self {
+        case .movies: "Movies"
+        case .tvShows: "Shows"
+        case .music: "Music"
+        }
+    }
+
     var systemImage: String {
         switch self {
         case .movies: "film"
@@ -17,64 +27,65 @@ enum MediaType: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-/// The sections of the menu bar dropdown. The first three map to a
-/// MediaType; Playlists and Continue… are cross-cutting.
-enum MenuSection: String, CaseIterable, Identifiable, Codable {
-    case movies
-    case tvShows
-    case music
-    case playlists
-    case continueItems
+/// A library on a server (or a local media type), as reported by its
+/// provider.
+struct MediaLibrary: Hashable {
+    let id: String
+    let name: String
+    let type: MediaType
+}
 
-    var id: String { rawValue }
+/// A row in the menu bar dropdown: one per library, using the server's own
+/// library name (libraries with the same name and type on different servers
+/// share a row), plus the fixed Playlists and Continue… rows.
+struct MenuSection: Hashable, Identifiable {
+    enum Kind: Hashable {
+        case library(MediaType)
+        case playlists
+        case continueItems
+    }
 
-    var title: String {
-        switch self {
-        case .movies: "Movies"
-        case .tvShows: "TV Shows"
-        case .music: "Music"
-        case .playlists: "Playlists"
-        case .continueItems: "Continue…"
+    let id: String
+    let title: String
+    let kind: Kind
+
+    static let playlists = MenuSection(id: "playlists", title: "Playlists", kind: .playlists)
+    static let continueItems = MenuSection(id: "continueItems", title: "Continue…", kind: .continueItems)
+
+    /// The row for libraries called `name` that hold `type`.
+    static func library(named name: String, type: MediaType) -> MenuSection {
+        MenuSection(id: "library|\(type.rawValue)|\(name.lowercased())", title: name, kind: .library(type))
+    }
+
+    var mediaType: MediaType? {
+        switch kind {
+        case .library(let type): type
+        case .playlists, .continueItems: nil
         }
     }
 
     var systemImage: String {
-        switch self {
-        case .movies: "film"
-        case .tvShows: "tv"
-        case .music: "music.note"
+        switch kind {
+        case .library(let type): type.systemImage
         case .playlists: "music.note.list"
         case .continueItems: "clock.arrow.circlepath"
-        }
-    }
-
-    var mediaType: MediaType? {
-        switch self {
-        case .movies: .movies
-        case .tvShows: .tvShows
-        case .music: .music
-        case .playlists, .continueItems: nil
         }
     }
 
     /// Sections whose tracks play with the inline music overlay. Continue…
     /// is included so its grouped album/playlist cells can host the overlay.
     var supportsInlineMusic: Bool {
-        self == .music || self == .playlists || self == .continueItems
-    }
-
-    var enabledByDefault: Bool {
-        switch self {
-        case .movies, .tvShows, .music: true
-        case .playlists, .continueItems: false
+        switch kind {
+        case .library(let type): type == .music
+        case .playlists, .continueItems: true
         }
     }
 
     /// Loading-placeholder height while a section's catalog fetches.
     var loadingHeight: CGFloat {
-        switch self {
-        case .music, .playlists: 110
-        case .movies, .tvShows, .continueItems: 165
+        switch kind {
+        case .library(.music), .playlists: 110
+        case .library, .continueItems: 165
         }
     }
 }
@@ -82,6 +93,8 @@ enum MenuSection: String, CaseIterable, Identifiable, Codable {
 /// Which backend an item came from; used to route stream resolution and
 /// playback reporting.
 enum MediaSource: String, Codable, Hashable {
+    /// No longer produced (the sample catalog is gone); kept so progress
+    /// saved by older builds still decodes instead of wiping Continue….
     case sample
     case plex
     case jellyfin
@@ -248,29 +261,62 @@ enum PlayerMode: String, CaseIterable {
     }
 }
 
-/// Sort order for the Movies section.
-enum MovieSort: String, CaseIterable {
-    case byTitle
-    case byYear
-    case byDateAdded
-    case byPlays
-}
-
-/// Sort order for the TV Shows section.
-enum TVSort: String, CaseIterable {
-    case byTitle
-    case byYear
-    case byDateAdded
-    case byPlays
-}
-
-/// Sort order for the Music section.
-enum MusicSort: String, CaseIterable {
+/// Sort order for a library section. Movies and TV offer every case except
+/// `byArtist`, which only the Music section shows.
+enum LibrarySort: String, CaseIterable {
     case byArtist
     case byTitle
     case byYear
     case byDateAdded
     case byPlays
+
+    var title: String {
+        switch self {
+        case .byArtist: "Artist"
+        case .byTitle: "Title"
+        case .byYear: "Year"
+        case .byDateAdded: "Date Added"
+        case .byPlays: "Plays"
+        }
+    }
+
+    /// How ascending and descending read for this sort.
+    var directionTitles: (ascending: String, descending: String) {
+        switch self {
+        case .byArtist, .byTitle: ("A to Z", "Z to A")
+        case .byYear, .byDateAdded: ("Oldest First", "Newest First")
+        case .byPlays: ("Fewest Plays First", "Most Plays First")
+        }
+    }
+
+    /// The sorts a section offers; Artist only applies to Music.
+    static func options(for type: MediaType) -> [LibrarySort] {
+        type == .music ? allCases : allCases.filter { $0 != .byArtist }
+    }
+
+    /// True when `a` comes before `b`. Items without the value (no year or
+    /// date added) go last in either direction.
+    func areInOrder(_ a: MediaItem, _ b: MediaItem, descending: Bool) -> Bool {
+        switch self {
+        case .byArtist: Self.order(a.subtitle ?? a.title, b.subtitle ?? b.title, descending)
+        case .byTitle: Self.order(a.title, b.title, descending)
+        case .byYear: Self.order(a.sortableYear, b.sortableYear, descending)
+        case .byDateAdded: Self.order(a.addedAt, b.addedAt, descending)
+        case .byPlays: Self.order(a.playCount ?? 0, b.playCount ?? 0, descending)
+        }
+    }
+
+    private static func order(_ a: String, _ b: String, _ descending: Bool) -> Bool {
+        a.localizedCompare(b) == (descending ? .orderedDescending : .orderedAscending)
+    }
+
+    private static func order<T: Comparable>(_ a: T?, _ b: T?, _ descending: Bool) -> Bool {
+        switch (a, b) {
+        case let (a?, b?): descending ? a > b : a < b
+        case (.some, nil): true
+        case (nil, _): false
+        }
+    }
 }
 
 /// Ascending or descending order for section sorting.
@@ -285,14 +331,12 @@ enum SortDirection: String, CaseIterable {
 /// Codable + Hashable so it can be handed to `WindowGroup(for:)` to open a player window.
 struct MediaItem: Identifiable, Hashable, Codable {
     var id: String
-    var source: MediaSource = .sample
+    var source: MediaSource
     var type: MediaType
     var kind: MediaKind = .movie
     var title: String
     var subtitle: String?
     var posterURL: URL?
-    /// Known up-front for Plex items; resolved lazily otherwise.
-    var streamURL: URL?
     var summary: String?
     /// The container this item was listed under (season for an episode,
     /// album/playlist for a track); lets auto-continue and the music queue
@@ -342,13 +386,54 @@ struct MediaItem: Identifiable, Hashable, Codable {
     }
 }
 
+/// The URLs to try for a server address typed by the user. Without a
+/// scheme ("jellyfin.example.com"), HTTPS comes first and plain HTTP
+/// second; an explicit scheme is kept as the only candidate.
+func serverURLCandidates(_ input: String) -> [URL] {
+    let address = input.trimmingCharacters(in: .whitespacesAndNewlines)
+    let strings = address.contains("://") ? [address] : ["https://\(address)", "http://\(address)"]
+    return strings.compactMap(URL.init(string:)).filter { $0.host() != nil }
+}
+
+extension URL {
+    /// This URL without an `X-Plex-Token` query item.
+    var removingPlexToken: URL {
+        guard var components = URLComponents(url: self, resolvingAgainstBaseURL: false),
+              let items = components.queryItems,
+              items.contains(where: { $0.name == "X-Plex-Token" }) else { return self }
+        let kept = items.filter { $0.name != "X-Plex-Token" }
+        components.queryItems = kept.isEmpty ? nil : kept
+        return components.url ?? self
+    }
+}
+
+extension MediaItem {
+    /// A copy with Plex tokens removed from its artwork URLs, for saving.
+    /// Older builds put the token in poster URLs, which then landed in
+    /// UserDefaults and the download index in plain text.
+    var removingPlexTokens: MediaItem {
+        var item = self
+        item.posterURL = posterURL?.removingPlexToken
+        item.parentPosterURL = parentPosterURL?.removingPlexToken
+        if let url = attributes["grandparentPosterURL"].flatMap(URL.init(string:)) {
+            item.attributes["grandparentPosterURL"] = url.removingPlexToken.absoluteString
+        }
+        return item
+    }
+}
+
 // MARK: - Providers
 
 /// Abstracts where media comes from so the UI works identically with the
 /// sample catalog, Plex, and Jellyfin.
 protocol MediaProvider {
     var source: MediaSource { get }
-    func items(for type: MediaType) async throws -> [MediaItem]
+    /// Stable per server, so library sections can be routed back to it.
+    var id: String { get }
+    /// The libraries this provider serves; each becomes (part of) a menu section.
+    func libraries() async throws -> [MediaLibrary]
+    /// The top-level items of one of `libraries()`.
+    func items(inLibrary library: MediaLibrary) async throws -> [MediaItem]
     /// Children of a container: a show's seasons, a season's episodes,
     /// an artist's albums, an album's or playlist's tracks.
     func children(of item: MediaItem) async throws -> [MediaItem]
@@ -429,7 +514,7 @@ func franchiseBaseTitle(_ title: String) -> String {
 
 /// UserDefaults keys for non-secret settings. Tokens and secrets live in
 /// the Keychain under `KeychainKeys`.
-enum SettingsKeys {
+nonisolated enum SettingsKeys {
     static let useMediaKeys = "useMediaKeys"
     /// JSON-encoded [PlexServer]. `plexServerURL` remains only so older
     /// single-server setups can be migrated by PlexServerStore.
@@ -463,7 +548,7 @@ enum SettingsKeys {
     static let musicSortDirection = "musicSortDirection"
 
     static func sectionEnabled(_ section: MenuSection) -> String {
-        "sectionEnabled_\(section.rawValue)"
+        "sectionEnabled_\(section.id)"
     }
 
     static func downloadFolderBookmark(_ type: MediaType) -> String {
@@ -491,22 +576,10 @@ enum SettingsKeys {
     }
 
     static let downloadIndicatorsEnabled = "downloadIndicatorsEnabled"
-    static let tmdbAPIKey = "tmdbAPIKey"
-
-    static func transcodeThreshold(_ type: MediaType) -> String {
-        "transcodeThreshold_\(type.rawValue)"
-    }
-
-    static func transcodePreset(_ type: MediaType) -> String {
-        "transcodePreset_\(type.rawValue)"
-    }
 
     static let movieLocalFirst = "movieLocalFirst"
     static let tvLocalFirst = "tvLocalFirst"
     static let musicLocalFirst = "musicLocalFirst"
-
-    static let queueOnClose = "queueOnClose"
-    static let savedTranscodeQueue = "savedTranscodeQueue"
 }
 
 /// Keychain item names for secrets.
@@ -523,4 +596,7 @@ enum KeychainKeys {
     static let traktAccessToken = "traktAccessToken"
     static let traktRefreshToken = "traktRefreshToken"
     static let lastfmSessionKey = "lastfmSessionKey"
+    /// Same name as the UserDefaults key older builds used, so
+    /// KeychainStore.stringMigratingFromDefaults(for:) moves it over.
+    static let tmdbAPIKey = "tmdbAPIKey"
 }

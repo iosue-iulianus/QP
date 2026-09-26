@@ -51,26 +51,104 @@ struct JellyfinClient {
 
     // MARK: - Authentication
 
-    /// Signs in with username/password; the returned token and user ID are
-    /// what a JellyfinConfiguration needs.
-    static func authenticate(serverURL: URL, username: String, password: String) async throws -> (token: String, userID: String) {
+    /// What a successful sign-in returns; the token and user ID are what a
+    /// JellyfinConfiguration needs.
+    struct SignInResult {
+        let token: String
+        let userID: String
+        let userName: String
+    }
+
+    /// Signs in with username/password.
+    static func authenticate(serverURL: URL, username: String, password: String) async throws -> SignInResult {
+        var request = anonymousRequest(serverURL.appending(path: "/Users/AuthenticateByName"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(["Username": username, "Pw": password])
+        return try await signIn(request)
+    }
+
+    /// Exchanges an approved Quick Connect request for an access token.
+    static func authenticate(serverURL: URL, quickConnectSecret secret: String) async throws -> SignInResult {
+        var request = anonymousRequest(serverURL.appending(path: "/Users/AuthenticateWithQuickConnect"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(["Secret": secret])
+        return try await signIn(request)
+    }
+
+    private static func signIn(_ request: URLRequest) async throws -> SignInResult {
         struct Response: Decodable {
-            struct User: Decodable { let Id: String }
+            struct User: Decodable {
+                let Id: String
+                let Name: String
+            }
             let AccessToken: String
             let User: User
         }
-        var request = URLRequest(url: serverURL.appending(path: "/Users/AuthenticateByName"))
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue(authorizationHeader(token: nil), forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONEncoder().encode(["Username": username, "Pw": password])
         let (data, response) = try await URLSession.shared.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw URLError(.userAuthenticationRequired)
         }
         let decoded = try JSONDecoder().decode(Response.self, from: data)
-        return (decoded.AccessToken, decoded.User.Id)
+        return SignInResult(token: decoded.AccessToken, userID: decoded.User.Id, userName: decoded.User.Name)
+    }
+
+    /// A request with client identification but no token, for sign-in
+    /// endpoints.
+    private static func anonymousRequest(_ url: URL) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(authorizationHeader(token: nil), forHTTPHeaderField: "Authorization")
+        return request
+    }
+
+    // MARK: - Quick Connect
+
+    /// A pending Quick Connect request. The user approves `Code` from any
+    /// Jellyfin app that is already signed in; `Secret` identifies the
+    /// request to this app.
+    struct QuickConnectRequest: Decodable {
+        let Secret: String
+        let Code: String
+        let Authenticated: Bool
+    }
+
+    enum QuickConnectError: LocalizedError {
+        case disabled
+        case expired
+
+        var errorDescription: String? {
+            switch self {
+            case .disabled: "Quick Connect is turned off on this server. An admin can enable it in the Jellyfin dashboard."
+            case .expired: "The code expired. Start Quick Connect again."
+            }
+        }
+    }
+
+    /// Starts a Quick Connect request (Jellyfin 10.9 and later).
+    static func initiateQuickConnect(serverURL: URL) async throws -> QuickConnectRequest {
+        var request = anonymousRequest(serverURL.appending(path: "/QuickConnect/Initiate"))
+        request.httpMethod = "POST"
+        return try await quickConnect(request)
+    }
+
+    /// The request's current state; `Authenticated` becomes true once the
+    /// user approves the code.
+    static func quickConnectState(serverURL: URL, secret: String) async throws -> QuickConnectRequest {
+        let url = serverURL.appending(path: "/QuickConnect/Connect")
+            .appending(queryItems: [URLQueryItem(name: "secret", value: secret)])
+        return try await quickConnect(anonymousRequest(url))
+    }
+
+    private static func quickConnect(_ request: URLRequest) async throws -> QuickConnectRequest {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        switch (response as? HTTPURLResponse)?.statusCode {
+        case 200: return try JSONDecoder().decode(QuickConnectRequest.self, from: data)
+        case 401, 403: throw QuickConnectError.disabled
+        case 404: throw QuickConnectError.expired
+        default: throw URLError(.badServerResponse)
+        }
     }
 
     // MARK: - Catalog
@@ -168,7 +246,6 @@ struct JellyfinClient {
                 // Season top level keeps the show visible via the subtitle.
                 subtitle: item.SeriesName ?? item.AlbumArtist ?? item.ProductionYear.map(String.init),
                 posterURL: imageURL(itemID: item.Id),
-                streamURL: nil,
                 summary: item.Overview,
                 attributes: [
                     "releaseDate": item.PremiereDate ?? "",
@@ -241,7 +318,6 @@ struct JellyfinClient {
                 title: entry.Name,
                 subtitle: subtitle,
                 posterURL: imageURL(itemID: entry.Id),
-                streamURL: nil,
                 summary: entry.Overview,
                 parentID: item.id,
                 parentKind: item.kind,
@@ -272,7 +348,6 @@ struct JellyfinClient {
                 title: entry.Name,
                 subtitle: nil,
                 posterURL: imageURL(itemID: entry.Id),
-                streamURL: nil,
                 summary: entry.Overview
             )
         }
@@ -356,7 +431,6 @@ struct JellyfinClient {
             title: entry.Name,
             subtitle: entry.ProductionYear.map(String.init),
             posterURL: imageURL(itemID: entry.Id),
-            streamURL: nil,
             summary: entry.Overview,
             attributes: [
                 "releaseDate": entry.PremiereDate ?? "",
@@ -424,7 +498,6 @@ struct JellyfinClient {
             title: pick.Name,
             subtitle: pick.AlbumArtist,
             posterURL: imageURL(itemID: pick.Id),
-            streamURL: nil,
             summary: pick.Overview
         )
     }
@@ -584,21 +657,23 @@ struct JellyfinMediaProvider: MediaProvider {
         try await client.deepSearch(query, type: type, tvTopLevel: tvTopLevel, musicTopLevel: musicTopLevel)
     }
 
-    func items(for type: MediaType) async throws -> [MediaItem] {
-        let libraries = try await client.libraries().filter { library in
-            library.mediaType == type
-                && (selectedLibraryIDs.isEmpty || selectedLibraryIDs.contains(library.id))
+    var id: String { "jellyfin" }
+
+    func libraries() async throws -> [MediaLibrary] {
+        try await client.libraries().compactMap { library in
+            guard let type = library.mediaType,
+                  selectedLibraryIDs.isEmpty || selectedLibraryIDs.contains(library.id) else { return nil }
+            return MediaLibrary(id: library.id, name: library.name, type: type)
         }
-        var all: [MediaItem] = []
-        for library in libraries {
-            all += try await client.items(
-                inLibrary: library.id,
-                type: type,
-                tvTopLevel: tvTopLevel,
-                musicTopLevel: musicTopLevel
-            )
-        }
-        return all
+    }
+
+    func items(inLibrary library: MediaLibrary) async throws -> [MediaItem] {
+        try await client.items(
+            inLibrary: library.id,
+            type: library.type,
+            tvTopLevel: tvTopLevel,
+            musicTopLevel: musicTopLevel
+        )
     }
 
     func streamURL(for item: MediaItem) async throws -> URL {

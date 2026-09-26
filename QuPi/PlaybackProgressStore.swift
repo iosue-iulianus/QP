@@ -62,7 +62,20 @@ enum PlaybackProgressStore {
         return (try? JSONDecoder().decode([String: PlaybackProgress].self, from: data)) ?? [:]
     }
 
+    /// Rewrites saved progress without Plex tokens; older builds stored
+    /// them inside poster URLs.
+    static func removeSavedPlexTokens() {
+        let entries = load()
+        guard !entries.isEmpty else { return }
+        save(entries)
+    }
+
     private static func save(_ entries: [String: PlaybackProgress]) {
+        let entries = entries.mapValues { entry in
+            var entry = entry
+            entry.item = entry.item.removingPlexTokens
+            return entry
+        }
         if let data = try? JSONEncoder().encode(entries) {
             UserDefaults.standard.set(data, forKey: SettingsKeys.playbackProgress)
         }

@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 
 /// The dropdown shown when the menu bar icon is clicked: a row per enabled
@@ -14,7 +13,6 @@ struct MenuBarContentView: View {
     private let downloadManager = DownloadManager.shared
 
     @FocusState private var searchFocused: Bool
-    @AppStorage(SettingsKeys.cacheArtwork) private var cacheArtwork = true
     @AppStorage("carouselVisibleCount") private var carouselVisibleCount = 3
     @AppStorage(SettingsKeys.playerMode) private var playerMode = PlayerMode.popout.rawValue
 
@@ -27,10 +25,7 @@ struct MenuBarContentView: View {
             header
             Divider()
 
-            // 1. Downloading Section (excludes items currently in Converting)
-            let activeDownloads = downloadManager.downloadingItems.filter { downloadingItem in
-                !downloadManager.transcodeQueue.contains(where: { $0.id == downloadingItem.id })
-            }
+            let activeDownloads = downloadManager.downloadingItems
             if !activeDownloads.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack {
@@ -59,56 +54,37 @@ struct MenuBarContentView: View {
                 Divider()
             }
 
-            // 2. Converting Section (uses compact MediaCarouselView matching Downloading & Simple Visuals)
-            if !downloadManager.transcodeQueue.isEmpty {
-                VStack(alignment: .leading, spacing: 0) {
-                    HStack {
-                        Image(systemName: "gearshape.2")
-                            .frame(width: 20)
-                        Text("Converting")
-                        Spacer()
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    
-                    let convertingItems = downloadManager.transcodeQueue.map { entry in
-                        MediaItem(
-                            id: entry.id,
-                            source: .local,
-                            type: entry.mediaType,
-                            kind: entry.mediaType == .tvShows ? .episode : .movie,
-                            title: entry.title,
-                            posterURL: entry.posterURL
-                        )
-                    }
-                    
-                    MediaCarouselView(
-                        items: convertingItems,
-                        selectedID: nil,
-                        isCompact: true,
-                        onSelect: { item in
-                            if !item.kind.isExpandable {
-                                openWindow(id: item.type == .music ? "music-player" : "video-player", value: item)
-                                NSApplication.shared.activate()
-                                dismiss()
-                            }
-                        }
-                    )
-                    .padding(.bottom, 10)
+            if appState.librarySections == nil {
+                ProgressView("Loading libraries…")
+                    .controlSize(.small)
+                    .font(.caption)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                Divider()
+            } else if let error = appState.librarySectionsError {
+                VStack(spacing: 6) {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    Button("Retry") { appState.resetCatalog() }
+                        .controlSize(.small)
                 }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
                 Divider()
             }
 
-            ForEach(appState.enabledSections) { section in
+            let sections = appState.enabledSections
+            ForEach(sections) { section in
                 self.section(for: section)
-                if section != appState.enabledSections.last {
+                if section != sections.last {
                     Divider()
                 }
             }
         }
         .frame(width: contentWidth)
         .fixedSize(horizontal: false, vertical: true)
-        .asyncImageURLSession(cacheArtwork ? ArtworkCache.persistentSession : ArtworkCache.ephemeralSession)
         .onChange(of: searchFocused) {
             if searchFocused {
                 withAnimation(.snappy(duration: 0.2)) { appState.activateSearch() }
@@ -209,42 +185,98 @@ struct MenuBarContentView: View {
 
     @ViewBuilder
     private func section(for section: MenuSection) -> some View {
-        Button {
-            // Rows are static headers while a search is active.
-            guard !appState.isSearchActive else { return }
-            withAnimation(.snappy(duration: 0.2)) {
-                appState.toggleExpansion(of: section)
-            }
-        } label: {
-            HStack {
-                Image(systemName: section.systemImage)
-                    .frame(width: 20)
-                Text(section.title)
-                Spacer()
-                if let count = visibleItems(for: section)?.count {
-                    Text("\(count)")
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
+        // Filtered and sorted once per redraw, shared by the count and the carousel.
+        let items = visibleItems(for: section)
+        // The sort menu sits between the title and the count, so the row is
+        // two buttons around it rather than one button containing a menu.
+        HStack(spacing: 6) {
+            Button { toggleRow(section) } label: {
+                HStack {
+                    Image(systemName: section.systemImage)
+                        .frame(width: 20)
+                    Text(section.title)
+                    Spacer()
                 }
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .rotationEffect(.degrees(isExpanded(section) ? 90 : 0))
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .buttonStyle(.plain)
+            .accessibilityValue(items.map { "\($0.count) items" } ?? "")
+            if section.mediaType != nil, isExpanded(section) {
+                sortMenu(for: section)
+            }
+            Button { toggleRow(section) } label: {
+                HStack {
+                    if let count = items?.count {
+                        Text("\(count)")
+                            .foregroundStyle(.secondary)
+                            .font(.caption)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isExpanded(section) ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            // Same action as the title button, which VoiceOver already reads.
+            .accessibilityHidden(true)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
 
         if isExpanded(section) {
-            sectionContent(for: section)
+            sectionContent(for: section, items: items)
                 .padding(.bottom, 10)
         }
     }
 
+    private func toggleRow(_ section: MenuSection) {
+        // Rows are static headers while a search is active.
+        guard !appState.isSearchActive else { return }
+        withAnimation(.snappy(duration: 0.2)) {
+            appState.toggleExpansion(of: section)
+        }
+    }
+
+    /// Small sort button for an open Movies, Shows or Music row.
+    private func sortMenu(for section: MenuSection) -> some View {
+        @Bindable var appState = appState
+        let sort: Binding<String>, direction: Binding<String>
+        let type = section.mediaType ?? .movies
+        switch type {
+        case .movies: (sort, direction) = ($appState.movieSortRaw, $appState.movieSortDirectionRaw)
+        case .tvShows: (sort, direction) = ($appState.tvSortRaw, $appState.tvSortDirectionRaw)
+        case .music: (sort, direction) = ($appState.musicSortRaw, $appState.musicSortDirectionRaw)
+        }
+        let labels = (LibrarySort(rawValue: sort.wrappedValue) ?? .byTitle).directionTitles
+        return Menu {
+            Picker("Sort By", selection: sort) {
+                ForEach(LibrarySort.options(for: type), id: \.self) { option in
+                    Text(option.title).tag(option.rawValue)
+                }
+            }
+            .pickerStyle(.inline)
+            Picker("Order", selection: direction) {
+                Text(labels.ascending).tag(SortDirection.ascending.rawValue)
+                Text(labels.descending).tag(SortDirection.descending.rawValue)
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Image(systemName: "arrow.up.arrow.down")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Sort \(section.title)")
+        .accessibilityLabel("Sort \(section.title)")
+    }
+
     @ViewBuilder
-    private func sectionContent(for section: MenuSection) -> some View {
+    private func sectionContent(for section: MenuSection, items: [MediaItem]?) -> some View {
         if appState.loadingSections.contains(section) {
             HStack {
                 Spacer()
@@ -267,7 +299,7 @@ struct MenuBarContentView: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
             
-        } else if let items = visibleItems(for: section), !items.isEmpty {
+        } else if let items, !items.isEmpty {
             MediaCarouselView(
                 items: items,
                 selectedID: appState.currentItem?.id ?? appState.drillPath[section]?.first?.id,
@@ -378,4 +410,3 @@ struct MenuBarContentView: View {
         .padding(.top, 6)
     }
 }
-#endif // os(macOS)

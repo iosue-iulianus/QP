@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		D2B33E53301475B10070F726 /* CLAUDE.md in Resources */ = {isa = PBXBuildFile; fileRef = D2B33E52301475B10070F726 /* CLAUDE.md */; };
 		D2DAEB623013BD43007A6FC3 /* SwiftVLC in Frameworks */ = {isa = PBXBuildFile; productRef = D2DAEB613013BD43007A6FC3 /* SwiftVLC */; };
 /* End PBXBuildFile section */
 
@@ -21,7 +20,6 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
-				Secrets.swift.template,
 			);
 			target = 000000000000000100000000 /* QP */;
 		};
@@ -130,7 +128,6 @@
 		000000000000000140000000 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
-				D2B33E53301475B10070F726 /* CLAUDE.md in Resources */,
 			);
 		};
 /* End PBXResourcesBuildPhase section */
@@ -201,7 +198,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -265,7 +262,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PROJECT_UNIQUE_VALUE = ZJRC6I8S;

@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 
 /// Full-width bottom transport bar for the VLC video player at normal (non-PiP)
@@ -102,11 +101,10 @@ struct VideoTransportBar: View {
         }
         .frame(height: 16)
     }
-
-    private func timeString(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds > 0 else { return "0:00" }
-        let total = Int(seconds)
-        return String(format: "%d:%02d", total / 60, total % 60)
-    }
 }
-#endif
+
+/// "m:ss" for a playback position in seconds, or "0:00" when unknown.
+func timeString(_ seconds: Double) -> String {
+    guard seconds.isFinite, seconds > 0 else { return "0:00" }
+    return Duration.seconds(seconds).formatted(.time(pattern: .minuteSecond(padMinuteToLength: 1, roundFractionalSeconds: .towardZero)))
+}

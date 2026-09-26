@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 
 struct SettingsView: View {
@@ -29,6 +28,7 @@ struct SettingsView: View {
     }
 }
 
+#if !SWIFT_PACKAGE // Previews need Xcode; SwiftPM builds skip them.
 #Preview("Settings") {
     SettingsView()
         .environment(AppState())

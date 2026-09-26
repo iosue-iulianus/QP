@@ -99,17 +99,6 @@ struct TMDbClient {
         return show.posterPath
     }
 
-    func episodeStillPath(tvTMDbID: Int, season: Int, episode: Int) async -> String? {
-        struct Episode: Decodable {
-            let stillPath: String?
-            enum CodingKeys: String, CodingKey { case stillPath = "still_path" }
-        }
-        let query = [URLQueryItem(name: "api_key", value: apiKey)]
-        guard let data = try? await get(path: "/tv/\(tvTMDbID)/season/\(season)/episode/\(episode)", query: query),
-              let ep = try? JSONDecoder().decode(Episode.self, from: data) else { return nil }
-        return ep.stillPath
-    }
-
     // MARK: - URL builder
 
     static func posterURL(path: String) -> URL? {
@@ -118,23 +107,16 @@ struct TMDbClient {
 
     // MARK: - Network
 
-    // MARK: - Key check
-
-    enum KeyCheck {
-        case valid, invalid, unreachable
-    }
-
-    /// Asks TMDb whether the API key is accepted, distinguishing a rejected
-    /// key from a network problem.
-    func checkKey() async -> KeyCheck {
-        var components = URLComponents(url: Self.baseURL.appending(path: "/configuration"), resolvingAgainstBaseURL: false)!
-        components.queryItems = [URLQueryItem(name: "api_key", value: apiKey)]
-        guard let (_, response) = try? await URLSession.shared.data(from: components.url!),
-              let status = (response as? HTTPURLResponse)?.statusCode else { return .unreachable }
-        switch status {
-        case 200: return .valid
-        case 400..<500: return .invalid
-        default: return .unreachable
+    /// Whether TMDb accepts `key`: true for a valid v3 API key, false when
+    /// TMDb rejects it. Throws when TMDb can't be reached.
+    static func isValidKey(_ key: String) async throws -> Bool {
+        var components = URLComponents(url: baseURL.appending(path: "/authentication"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "api_key", value: key)]
+        let (_, response) = try await URLSession.shared.data(from: components.url!)
+        switch (response as? HTTPURLResponse)?.statusCode {
+        case 200: return true
+        case 401: return false
+        default: throw URLError(.badServerResponse)
         }
     }
 

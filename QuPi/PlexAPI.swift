@@ -1,4 +1,3 @@
-#if os(macOS)
 import Foundation
 import VideoToolbox
 
@@ -33,6 +32,18 @@ final class PlexConfiguration {
 
 /// A connected Plex server. The list lives in UserDefaults; each server's
 /// token is a separate Keychain item so no secrets are stored alongside.
+enum PlexError: LocalizedError {
+    case unauthorized
+    case http(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .unauthorized: "Plex rejected the sign-in token. Reconnect the server in Settings > Accounts."
+        case .http(let status): "The Plex server returned an error (HTTP \(status))."
+        }
+    }
+}
+
 struct PlexServer: Codable, Identifiable, Hashable {
     let id: String
     var name: String
@@ -63,6 +74,20 @@ enum PlexServerStore {
 
     static func setToken(_ token: String?, for serverID: String) {
         KeychainStore.set(token, for: KeychainKeys.plexServerToken(serverID))
+    }
+
+    /// Makes `url` the server's primary address after the saved one failed,
+    /// keeping the old primary as the first fallback, so the next launch
+    /// doesn't wait for the dead address to time out again.
+    static func promote(_ url: URL, forServer id: String) {
+        var servers = load()
+        guard let index = servers.firstIndex(where: { $0.id == id }) else { return }
+        let old = servers[index].urlString
+        let new = url.absoluteString
+        guard old != new else { return }
+        servers[index].urlString = new
+        servers[index].fallbackURLStrings = [old] + (servers[index].fallbackURLStrings ?? []).filter { $0 != new && $0 != old }
+        save(servers)
     }
 
     /// Removes a server and its Keychain token.
@@ -153,7 +178,11 @@ struct PlexClient {
         request.setValue(config.token, forHTTPHeaderField: "X-Plex-Token")
         request.setValue(Self.clientIdentifier, forHTTPHeaderField: "X-Plex-Client-Identifier")
         request.setValue(Self.productName, forHTTPHeaderField: "X-Plex-Product")
-        return try await URLSession.shared.data(for: request)
+        let result = try await URLSession.shared.data(for: request)
+        // The server answered, so an HTTP error is final: the other
+        // addresses reach the same server.
+        try Self.validate(result.1)
+        return result
     }
 
     // MARK: - Connection selection
@@ -177,7 +206,11 @@ struct PlexClient {
             config.connectionCheck = nil // check again on the next request
             throw URLError(.cannotConnectToHost)
         }
-        config.serverURL = url
+        if url != config.serverURL {
+            config.serverURL = url
+            // Start from this address next launch (and show it in Settings).
+            PlexServerStore.promote(url, forServer: config.serverID)
+        }
     }
 
     /// Asks every address at once for Plex's /identity (which needs no
@@ -203,6 +236,13 @@ struct PlexClient {
             }
             return nil
         }
+    }
+
+    /// Turns non-2xx responses into readable errors instead of letting them
+    /// surface later as JSON decoding failures.
+    private static func validate(_ response: URLResponse) throws {
+        guard let status = (response as? HTTPURLResponse)?.statusCode, !(200..<300).contains(status) else { return }
+        throw status == 401 ? PlexError.unauthorized : PlexError.http(status)
     }
 
     func libraries() async throws -> [PlexLibrary] {
@@ -287,7 +327,6 @@ struct PlexClient {
                 title: entry.title,
                 subtitle: entry.parentTitle ?? entry.grandparentTitle ?? entry.year.map(String.init),
                 posterURL: entry.thumb.map(imageURL(thumbPath:)),
-                streamURL: nil,
                 summary: entry.summary,
                 // For season top-level display, carry parent (show) context so artwork
                 // downloads can place the show poster next to the show folder.
@@ -350,7 +389,6 @@ struct PlexClient {
                 title: entry.title,
                 subtitle: subtitle,
                 posterURL: entry.thumb.map(imageURL(thumbPath:)) ?? item.posterURL,
-                streamURL: nil,
                 summary: entry.summary,
                 parentID: item.id,
                 parentKind: item.kind,
@@ -384,7 +422,6 @@ struct PlexClient {
                 title: entry.title,
                 subtitle: entry.leafCount.map { "\($0) items" },
                 posterURL: (entry.composite ?? entry.thumb).map(imageURL(thumbPath:)),
-                streamURL: nil,
                 summary: entry.summary
             )
         }
@@ -471,7 +508,6 @@ struct PlexClient {
             title: entry.title,
             subtitle: entry.year.map(String.init),
             posterURL: entry.thumb.map(imageURL(thumbPath:)),
-            streamURL: nil,
             summary: entry.summary,
             attributes: [
                 "releaseDate": entry.originallyAvailableAt ?? "",
@@ -545,7 +581,6 @@ struct PlexClient {
             title: pick.title,
             subtitle: pick.grandparentTitle,
             posterURL: pick.thumb.map(imageURL(thumbPath:)) ?? item.posterURL,
-            streamURL: nil,
             summary: pick.summary
         )
     }
@@ -561,7 +596,8 @@ struct PlexClient {
             URLQueryItem(name: "height", value: "600"),
             URLQueryItem(name: "minSize", value: "1"),
             URLQueryItem(name: "url", value: thumbPath),
-            URLQueryItem(name: "X-Plex-Token", value: config.token),
+            // No token here: these URLs are saved (Continue list, download
+            // index). ArtworkCache sends the token as a header instead.
         ]
         return components.url!
     }
@@ -774,17 +810,19 @@ struct PlexClient {
     /// Non-strong pins are the short 4-character codes that page expects
     /// (strong pins are long codes for the app.plex.tv/auth OAuth flow).
     static func requestPIN() async throws -> PIN {
-        let (data, _) = try await URLSession.shared.data(
+        let (data, response) = try await URLSession.shared.data(
             for: plexTVRequest(path: "/api/v2/pins", method: "POST")
         )
+        try validate(response)
         return try JSONDecoder().decode(PIN.self, from: data)
     }
 
     /// Step 2: poll until `authToken` is non-nil, meaning the PIN was linked.
     static func checkPIN(id: Int) async throws -> PIN {
-        let (data, _) = try await URLSession.shared.data(
+        let (data, response) = try await URLSession.shared.data(
             for: plexTVRequest(path: "/api/v2/pins/\(id)", method: "GET")
         )
+        try validate(response)
         return try JSONDecoder().decode(PIN.self, from: data)
     }
 
@@ -818,21 +856,13 @@ struct PlexClient {
                 let address: String
                 let port: Int
                 let networkProtocol: String
-                let relay: Bool
+                /// Missing from older server responses.
+                let relay: Bool?
+                var isRelay: Bool { relay ?? false }
 
                 enum CodingKeys: String, CodingKey {
                     case uri, local, address, port, relay
                     case networkProtocol = "protocol"
-                }
-
-                init(from decoder: Decoder) throws {
-                    let c = try decoder.container(keyedBy: CodingKeys.self)
-                    uri = try c.decode(String.self, forKey: .uri)
-                    local = try c.decode(Bool.self, forKey: .local)
-                    address = try c.decode(String.self, forKey: .address)
-                    port = try c.decode(Int.self, forKey: .port)
-                    networkProtocol = try c.decode(String.self, forKey: .networkProtocol)
-                    relay = try c.decodeIfPresent(Bool.self, forKey: .relay) ?? false
                 }
             }
             let name: String
@@ -843,7 +873,8 @@ struct PlexClient {
         }
         var request = plexTVRequest(path: "/api/v2/resources?includeHttps=1", method: "GET")
         request.setValue(accountToken, forHTTPHeaderField: "X-Plex-Token")
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response)
         let resources = try JSONDecoder().decode([Resource].self, from: data)
         return resources
             .filter { $0.provides.contains("server") }
@@ -851,7 +882,7 @@ struct PlexClient {
                 // Sort: local non-relay first, then remote non-relay, then relay last.
                 let sorted = (resource.connections ?? []).sorted {
                     if $0.local != $1.local { return $0.local }
-                    if $0.relay != $1.relay { return !$0.relay }
+                    if $0.isRelay != $1.isRelay { return !$0.isRelay }
                     return false
                 }
                 // For each connection emit the direct-IP URL before the plex.direct URI,
@@ -862,7 +893,7 @@ struct PlexClient {
                 var seen = Set<String>()
                 var validURLs: [URL] = []
                 for connection in sorted {
-                    if !connection.relay, !connection.address.isEmpty {
+                    if !connection.isRelay, !connection.address.isEmpty {
                         let schemes = connection.local ? ["https", "http"] : ["https"]
                         for scheme in schemes {
                             if let url = URL(string: "\(scheme)://\(connection.address):\(connection.port)"),
@@ -922,21 +953,23 @@ struct PlexMediaProvider: MediaProvider {
         return item
     }
 
-    func items(for type: MediaType) async throws -> [MediaItem] {
-        let libraries = try await client.libraries().filter { library in
-            library.mediaType == type
-                && (selectedLibraryKeys.isEmpty || selectedLibraryKeys.contains(library.key))
+    var id: String { "plex:\(serverID)" }
+
+    func libraries() async throws -> [MediaLibrary] {
+        try await client.libraries().compactMap { library in
+            guard let type = library.mediaType,
+                  selectedLibraryKeys.isEmpty || selectedLibraryKeys.contains(library.key) else { return nil }
+            return MediaLibrary(id: library.key, name: library.title, type: type)
         }
-        var all: [MediaItem] = []
-        for library in libraries {
-            all += try await client.items(
-                inLibrary: library.key,
-                type: type,
-                tvTopLevel: tvTopLevel,
-                musicTopLevel: musicTopLevel
-            )
-        }
-        return all.map(tagged)
+    }
+
+    func items(inLibrary library: MediaLibrary) async throws -> [MediaItem] {
+        try await client.items(
+            inLibrary: library.id,
+            type: library.type,
+            tvTopLevel: tvTopLevel,
+            musicTopLevel: musicTopLevel
+        ).map(tagged)
     }
 
     func children(of item: MediaItem) async throws -> [MediaItem] {
@@ -953,7 +986,6 @@ struct PlexMediaProvider: MediaProvider {
     }
 
     func streamURL(for item: MediaItem) async throws -> URL {
-        if let direct = item.streamURL { return direct }
         return item.kind == .track
             ? await client.trackStreamURL(ratingKey: item.id)
             : await client.videoStreamURL(ratingKey: item.id)
@@ -974,4 +1006,3 @@ struct PlexMediaProvider: MediaProvider {
         try await client.randomTrack(sameArtistAs: item).map(tagged)
     }
 }
-#endif // os(macOS)

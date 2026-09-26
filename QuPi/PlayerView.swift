@@ -1,5 +1,6 @@
 import SwiftUI
 import AVKit
+import Combine
 
 /// Playback window for a media item (AVKit for video, mini-player for music).
 /// Handles async stream resolution, scrobbling, position resuming, and queue management.
@@ -7,9 +8,7 @@ struct PlayerView: View {
     @Binding var item: MediaItem
 
     @Environment(AppState.self) private var appState
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.dismiss) private var dismissWindow
-    // errorMessage moved to AppState.playbackError so both engines can set it.
     @State private var isPinned = false
     @State private var queue: [MediaItem] = []
     @State private var videoAspectRatio: CGFloat?
@@ -34,23 +33,6 @@ struct PlayerView: View {
         item.subtitle.map { "\(item.title) — \($0)" } ?? item.title
     }
 
-    private var uiScale: CGFloat {
-        switch playerUISize {
-        case .small: 0.75
-        case .medium: 1.0
-        case .large: 1.35
-        case .dynamic:
-            switch dynamicTypeSize {
-            case .xSmall, .small: 0.75
-            case .medium: 1.0
-            case .large: 1.15
-            case .xLarge: 1.25
-            case .xxLarge, .xxxLarge: 1.35
-            default: 1.5
-            }
-        }
-    }
-
     var body: some View {
         Group {
             if appState.hasActivePlayer {
@@ -68,31 +50,13 @@ struct PlayerView: View {
                             get: { appState.isScrubbing },
                             set: { appState.isScrubbing = $0 }
                         ),
-                        onSeek: { seconds in
-                            appState.isScrubbing = true
-                            appState.seek(to: seconds)
-                            appState.isScrubbing = false
-                        },
+                        onSeek: seek,
                         onPlayPause: appState.togglePlayPause,
                         onNext: playNext,
                         onPick: { picked in item = picked }
                     )
                     .frame(minWidth: 300, minHeight: 480)
-                    .toolbar {
-                        ToolbarItem(placement: .primaryAction) {
-                            Button {
-                                isPinned.toggle()
-                            } label: {
-                                Image(systemName: isPinned ? "pin.fill" : "pin")
-                                    .font(.system(size: 9))
-                            }
-                            .controlSize(.small)
-                            .help(isPinned ? "Let other windows cover this player" : "Keep this player above other windows")
-                        }
-                        // Drop the shared glass pill; the button keeps its
-                        // own compact circular background.
-                        .sharedBackgroundVisibility(.hidden)
-                    }
+                    .toolbar { pinToolbarItem }
                 } else if let player = appState.player {
                     videoPlayerView(player: player)
                 } else if let bridge = appState.vlcBridge {
@@ -145,20 +109,6 @@ struct PlayerView: View {
         }
     }
 
-    private var pinOverlay: some View {
-        Button {
-            isPinned.toggle()
-        } label: {
-            Image(systemName: isPinned ? "pin.fill" : "pin")
-                .font(.system(size: 11 * uiScale))
-                .padding(8)
-                .background(.ultraThinMaterial, in: Circle())
-        }
-        .buttonStyle(.plain)
-        .help(isPinned ? "Let other windows cover this player" : "Keep this player above other windows")
-        .padding(8)
-    }
-
     // MARK: - Video player
 
     /// Strips of the video area reserved for AVKit's built-in overlay
@@ -177,11 +127,12 @@ struct PlayerView: View {
     private static let pipControlsMaxHeight: CGFloat = 480
 
     private func videoPlayerView(player: AVPlayer) -> some View {
-        VideoPlayerRepresentable(
-            player: player,
-            controlsStyle: usePiPControls ? .none : .inline,
-            videoGravity: selectedCrop == .original ? .resizeAspect : .resizeAspectFill
-        )
+        videoChrome(
+            VideoPlayerRepresentable(
+                player: player,
+                controlsStyle: usePiPControls ? .none : .inline,
+                videoGravity: selectedCrop == .original ? .resizeAspect : .resizeAspectFill
+            )
             .overlay {
                 GeometryReader { geo in
                     VideoClickCapture(onSingleClick: appState.togglePlayPause)
@@ -193,23 +144,52 @@ struct PlayerView: View {
                 }
             }
             .overlay {
-                if usePiPControls {
-                    PiPControlsOverlay(
-                        isPlaying: appState.isPlaying,
-                        visible: controlsVisible || !appState.isPlaying,
-                        isPinned: $isPinned,
-                        currentTime: appState.currentTime,
-                        totalDuration: appState.totalDuration,
-                        onPlayPause: appState.togglePlayPause,
-                        onSeek: { seconds in
-                            appState.isScrubbing = true
-                            appState.seek(to: seconds)
-                            appState.isScrubbing = false
-                        },
-                        onClose: { dismissWindow() }
-                    )
-                }
+                // AVKit draws its own inline transport bar at normal sizes.
+                if usePiPControls { pipControls }
             }
+            .task(id: ObjectIdentifier(player)) {
+                await observeVideoAspectRatio(of: player)
+            }
+        )
+    }
+
+    /// SwiftVLC video view with the same feature set as the AVKit path:
+    /// aspect-ratio-locked window, auto-hiding chrome, size-driven control switch
+    /// (full transport bar at normal size, PiP-style overlay when tiny), and crop.
+    private func vlcPlayerView(bridge: VLCPlayerBridge) -> some View {
+        videoChrome(
+            VLCVideoPlayerView(bridge: bridge)
+                .overlay {
+                    VideoClickCapture(onSingleClick: appState.togglePlayPause)
+                }
+                .overlay {
+                    if usePiPControls {
+                        pipControls
+                    } else {
+                        VideoTransportBar(
+                            isPlaying: appState.isPlaying,
+                            visible: controlsVisible || !appState.isPlaying,
+                            currentTime: appState.currentTime,
+                            totalDuration: appState.totalDuration,
+                            onPlayPause: appState.togglePlayPause,
+                            onSeek: seek
+                        )
+                    }
+                }
+                .task(id: ObjectIdentifier(bridge.player)) {
+                    await observeVLCVideoAspectRatio(of: bridge)
+                }
+                .onChange(of: selectedCrop) { _, newCrop in
+                    bridge.setCrop(newCrop)
+                }
+        )
+    }
+
+    /// Window behaviour shared by both video engines: size-driven switch to
+    /// the PiP-style controls, full-window layout under the titlebar, and
+    /// the toolbar.
+    private func videoChrome(_ video: some View) -> some View {
+        video
             .onGeometryChange(for: CGSize.self) { proxy in
                 proxy.size
             } action: { size in
@@ -223,13 +203,10 @@ struct PlayerView: View {
             .frame(minWidth: 200, minHeight: 120)
             // Fill the whole window, with the titlebar floating over the
             // video (QuickTime-style). This lets the window frame match the
-            // video aspect ratio exactly — otherwise the toolbar strip makes
+            // video aspect ratio exactly; otherwise the toolbar strip makes
             // the visible video area shorter than the frame and letterbox
             // bars appear.
             .ignoresSafeArea(.container, edges: .top)
-            .task(id: ObjectIdentifier(player)) {
-                await observeVideoAspectRatio(of: player)
-            }
             .toolbar {
                 // Tiny (PiP-style) mode has no toolbar at all; the overlay
                 // provides its own close/pin buttons like the system popout.
@@ -262,130 +239,59 @@ struct PlayerView: View {
                         .help("Crop the video to a fixed aspect ratio")
                     }
                     .sharedBackgroundVisibility(.hidden)
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            isPinned.toggle()
-                        } label: {
-                            Image(systemName: isPinned ? "pin.fill" : "pin")
-                                .font(.system(size: 9))
-                        }
-                        .controlSize(.small)
-                        .help(isPinned ? "Let other windows cover this player" : "Keep this player above other windows")
-                    }
-                    // Drop the shared glass pill; the button keeps its own
-                    // compact circular background.
-                    .sharedBackgroundVisibility(.hidden)
+                    pinToolbarItem
                 }
             }
     }
 
-    /// SwiftVLC video view with the same feature set as the AVKit path:
-    /// aspect-ratio-locked window, auto-hiding chrome, size-driven control switch
-    /// (full transport bar at normal size, PiP-style overlay when tiny), and crop.
-    private func vlcPlayerView(bridge: VLCPlayerBridge) -> some View {
-        VLCVideoPlayerView(bridge: bridge)
-            .overlay {
-                VideoClickCapture(onSingleClick: appState.togglePlayPause)
+    private var pinToolbarItem: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                isPinned.toggle()
+            } label: {
+                Image(systemName: isPinned ? "pin.fill" : "pin")
+                    .font(.system(size: 9))
             }
-            .overlay {
-                if usePiPControls {
-                    PiPControlsOverlay(
-                        isPlaying: appState.isPlaying,
-                        visible: controlsVisible || !appState.isPlaying,
-                        isPinned: $isPinned,
-                        currentTime: appState.currentTime,
-                        totalDuration: appState.totalDuration,
-                        onPlayPause: appState.togglePlayPause,
-                        onSeek: { seconds in
-                            appState.isScrubbing = true
-                            appState.seek(to: seconds)
-                            appState.isScrubbing = false
-                        },
-                        onClose: { dismissWindow() }
-                    )
-                } else {
-                    VideoTransportBar(
-                        isPlaying: appState.isPlaying,
-                        visible: controlsVisible || !appState.isPlaying,
-                        currentTime: appState.currentTime,
-                        totalDuration: appState.totalDuration,
-                        onPlayPause: appState.togglePlayPause,
-                        onSeek: { seconds in
-                            appState.isScrubbing = true
-                            appState.seek(to: seconds)
-                            appState.isScrubbing = false
-                        }
-                    )
-                }
-            }
-            .onGeometryChange(for: CGSize.self) { proxy in
-                proxy.size
-            } action: { size in
-                usePiPControls = size.width < Self.pipControlsMaxWidth
-                    && size.height < Self.pipControlsMaxHeight
-            }
-            .frame(minWidth: 200, minHeight: 120)
-            .ignoresSafeArea(.container, edges: .top)
-            .task(id: ObjectIdentifier(bridge.player)) {
-                await observeVLCVideoAspectRatio(of: bridge)
-            }
-            .onChange(of: selectedCrop) { _, newCrop in
-                bridge.setCrop(newCrop)
-            }
-            .toolbar {
-                if !usePiPControls {
-                    ToolbarItem(placement: .principal) {
-                        Text(windowTitle)
-                            .font(.headline)
-                            .lineLimit(1)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .glassEffect()
-                    }
-                    .sharedBackgroundVisibility(.hidden)
-                    ToolbarItem(placement: .primaryAction) {
-                        Menu {
-                            Picker("Crop", selection: $selectedCrop) {
-                                ForEach(VideoCrop.allCases) { crop in
-                                    Text(crop.title).tag(crop)
-                                }
-                            }
-                            .pickerStyle(.inline)
-                        } label: {
-                            Label("Crop", systemImage: "aspectratio")
-                        }
-                        .controlSize(.small)
-                        .help("Crop the video to a fixed aspect ratio")
-                    }
-                    .sharedBackgroundVisibility(.hidden)
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            isPinned.toggle()
-                        } label: {
-                            Image(systemName: isPinned ? "pin.fill" : "pin")
-                                .font(.system(size: 9))
-                        }
-                        .controlSize(.small)
-                        .help(isPinned ? "Let other windows cover this player" : "Keep this player above other windows")
-                    }
-                    .sharedBackgroundVisibility(.hidden)
-                }
-            }
+            .controlSize(.small)
+            .help(isPinned ? "Let other windows cover this player" : "Keep this player above other windows")
+        }
+        // Drop the shared glass pill; the button keeps its own compact
+        // circular background.
+        .sharedBackgroundVisibility(.hidden)
     }
 
-    /// Polls the current item's presentation size, which (unlike the asset's
-    /// video-track natural size) is also populated for HLS streams once
-    /// playback starts, and follows the item when auto-continue swaps it.
+    private var pipControls: some View {
+        PiPControlsOverlay(
+            isPlaying: appState.isPlaying,
+            visible: controlsVisible || !appState.isPlaying,
+            isPinned: $isPinned,
+            currentTime: appState.currentTime,
+            totalDuration: appState.totalDuration,
+            onPlayPause: appState.togglePlayPause,
+            onSeek: seek,
+            onClose: { dismissWindow() }
+        )
+    }
+
+    /// Seeks with scrubbing flagged so the periodic time observer doesn't
+    /// overwrite the new position mid-seek.
+    private func seek(_ seconds: Double) {
+        appState.isScrubbing = true
+        appState.seek(to: seconds)
+        appState.isScrubbing = false
+    }
+
+    /// Observes (KVO) the current item's presentation size, which (unlike
+    /// the asset's video-track natural size) is also populated for HLS
+    /// streams once playback starts, and follows the item when
+    /// auto-continue swaps it. Ends when the view's task is cancelled.
     private func observeVideoAspectRatio(of player: AVPlayer) async {
-        while !Task.isCancelled {
-            if let size = player.currentItem?.presentationSize,
-               size.width > 0, size.height > 0 {
-                let ratio = size.width / size.height
-                if videoAspectRatio != ratio {
-                    videoAspectRatio = ratio
-                }
+        for await size in player.publisher(for: \.currentItem?.presentationSize).values {
+            guard let size, size.width > 0, size.height > 0 else { continue }
+            let ratio = size.width / size.height
+            if videoAspectRatio != ratio {
+                videoAspectRatio = ratio
             }
-            try? await Task.sleep(for: .milliseconds(250))
         }
     }
 
@@ -449,18 +355,6 @@ struct PlayerView: View {
                 item = next
             } else if let next = await appState.autoContinueItem(after: item) {
                 item = next
-            }
-        }
-    }
-
-    private func toggleFullScreen() {
-        DispatchQueue.main.async {
-            if let window = NSApplication.shared.keyWindow {
-                if window.styleMask.contains(.fullScreen) {
-                    window.toggleFullScreen(nil)
-                } else {
-                    window.toggleFullScreen(nil)
-                }
             }
         }
     }
@@ -632,12 +526,6 @@ private struct PiPControlsOverlay: View {
         }
         .frame(height: 16)
     }
-
-    private func timeString(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds > 0 else { return "0:00" }
-        let total = Int(seconds)
-        return String(format: "%d:%02d", total / 60, total % 60)
-    }
 }
 
 // MARK: - Music mini-player
@@ -683,11 +571,7 @@ private struct MusicPlayerLayout: View {
             RoundedRectangle(cornerRadius: 12)
                 .fill(.quaternary)
             if let url = item.posterURL {
-                AsyncImage(request: URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad)) { image in
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } placeholder: {
+                ArtworkImage(url: url) {
                     ProgressView()
                 }
             } else {
@@ -782,9 +666,7 @@ private struct MusicPlayerLayout: View {
         ZStack {
             RoundedRectangle(cornerRadius: 4).fill(.quaternary)
             if let url = track.posterURL {
-                AsyncImage(request: URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad)) { image in
-                    image.resizable().aspectRatio(contentMode: .fill)
-                } placeholder: {
+                ArtworkImage(url: url) {
                     Image(systemName: "music.note").font(.caption2).foregroundStyle(.secondary)
                 }
             }
@@ -792,21 +674,16 @@ private struct MusicPlayerLayout: View {
         .frame(width: 28, height: 28)
         .clipShape(RoundedRectangle(cornerRadius: 4))
     }
-
-    private func timeString(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds > 0 else { return "0:00" }
-        let total = Int(seconds)
-        return String(format: "%d:%02d", total / 60, total % 60)
-    }
 }
 
+#if !SWIFT_PACKAGE // Previews need Xcode; SwiftPM builds skip them.
 #Preview("Music mini-player") {
     @Previewable @State var time = 83.0
     @Previewable @State var scrubbing = false
     MusicPlayerLayout(
-        item: MediaItem(id: "t1", type: .music, kind: .track, title: "Sample Track", subtitle: "Sample Artist"),
+        item: MediaItem(id: "t1", source: .local, type: .music, kind: .track, title: "Sample Track", subtitle: "Sample Artist"),
         queue: (2...8).map {
-            MediaItem(id: "t\($0)", type: .music, kind: .track, title: "Queued Track \($0)", subtitle: "Sample Artist")
+            MediaItem(id: "t\($0)", source: .local, type: .music, kind: .track, title: "Queued Track \($0)", subtitle: "Sample Artist")
         },
         isPlaying: true,
         currentTime: $time,
@@ -819,10 +696,10 @@ private struct MusicPlayerLayout: View {
     )
     .frame(width: 340, height: 660)
 }
+#endif
 
 // MARK: - Window pinning
 
-#if os(macOS)
 /// Manages window-level settings: pin behavior, toolbar visibility (while maintaining size),
 /// and video aspect ratio locking.
 private struct WindowLevelAccessor: NSViewRepresentable {
@@ -1162,9 +1039,3 @@ private class ClickCaptureView: NSView {
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
-#else
-private struct WindowLevelAccessor: View {
-    let isPinned: Bool
-    var body: some View { EmptyView() }
-}
-#endif

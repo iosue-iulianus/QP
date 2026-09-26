@@ -1,4 +1,3 @@
-#if os(macOS)
 import AppKit
 import Observation
 
@@ -8,35 +7,6 @@ struct DownloadIndexEntry: Codable {
     /// Filename (relative to the type's folder). `nil` for container entries
     /// written after all descendants of a batch download succeed.
     let filename: String?
-}
-
-/// A request from DownloadManager for the UI to answer before transcoding.
-struct TranscodePromptRequest {
-    let item: MediaItem
-    let preset: TranscodePreset?
-    let continuation: CheckedContinuation<TranscodePreset?, Never>?
-}
-
-/// Limits concurrent hardware HEVC encode sessions to the number of dedicated media
-/// engines on this device. Callers `try await waitForSlot()` before starting a transcode
-/// and `await release()` when done. Throws `CancellationError` while waiting if the
-/// calling task is cancelled.
-private actor TranscodePool {
-    private var active: Int = 0
-    private let capacity: Int
-
-    init(capacity: Int) { self.capacity = max(1, capacity) }
-
-    func waitForSlot() async throws {
-        while active >= capacity {
-            try await Task.sleep(for: .milliseconds(200))
-        }
-        active += 1
-    }
-
-    func release() {
-        active = max(0, active - 1)
-    }
 }
 
 /// Downloads media to the per-type folders chosen in Settings → Data,
@@ -56,104 +26,25 @@ final class DownloadManager {
     
     /// Tracks download progress (0.0 to 1.0) for active downloads by item ID.
     var downloadProgress: [String: Double] = [:]
-    
-    /// Holds items waiting for the user to respond to the Convert prompt
-    var pendingPrompts: [String: TranscodePromptRequest] = [:]
-    
-    var transcodeQueue: [TranscodeQueueEntry] = []
-    /// Active transcode tasks keyed by item ID; supports concurrent cancellation.
-    private var activeTasks: [String: Task<URL?, Never>] = [:]
-    private let transcodePool = TranscodePool(capacity: VideoTranscoder.hardwareEncodeEngineCount())
 
-    /// In-memory caches of downloaded item IDs per type, populated on launch and
+    /// In-memory cache of downloaded item IDs per type, populated on launch and
     /// updated on each download completion. Used by sortedItems for O(1) Local First
     /// checks instead of reading the JSON index from disk on every sort call.
-    var downloadedMovieIDs: Set<String> = []
-    var downloadedTVShowIDs: Set<String> = []
-    var downloadedMusicIDs: Set<String> = []
-
-    /// Returns active download or transcode progress (0.0 to 1.0) for an item ID.
-        func activeProgress(for itemID: String) -> Double? {
-            // Transcode progress takes precedence
-            if let entry = transcodeQueue.first(where: { $0.id == itemID }) {
-                return Double(entry.progress)
-            }
-            if let progress = downloadProgress[itemID] {
-                return progress
-            }
-            return nil
-        }
-
-    /// Evaluates whether an already downloaded item exceeds the Transcode threshold
-    /// and the user has Prompted mode enabled.
-    func isEligibleForPromptedTranscode(_ item: MediaItem) -> Bool {
-        guard isDownloaded(item), item.type != .music else { return false }
-        
-        let modeRaw = UserDefaults.standard.string(forKey: "transcodeMode") ?? "Automatic"
-        guard modeRaw == "Prompted" else { return false }
-        
-        let thresholdRaw = UserDefaults.standard.string(forKey: SettingsKeys.transcodeThreshold(item.type)) ?? ""
-        guard let threshold = TranscodeThreshold(rawValue: thresholdRaw),
-              threshold != .disabled,
-              let thresholdBytes = threshold.bytes else { return false }
-        
-        guard let url = localURL(for: item),
-              let fileSize = try? url.resourceValues(forKeys: [.totalFileSizeKey]).totalFileSize else { return false }
-              
-        return Int64(fileSize) >= thresholdBytes
-    }
-
-    /// Resolves a pending transcode prompt with the user's decision.
-    func resolvePrompt(for itemID: String, convert: Bool, preset: TranscodePreset?) {
-        if let prompt = pendingPrompts.removeValue(forKey: itemID) {
-            if let continuation = prompt.continuation {
-                // Resume the suspended auto-download pipeline
-                continuation.resume(returning: convert ? preset : nil)
-            } else if convert, let preset = preset {
-                // Manually trigger a transcode for an already downloaded file
-                Task {
-                    await forceTranscode(item: prompt.item, preset: preset)
-                }
-            }
-        }
-    }
+    var downloadedIDs: [MediaType: Set<String>] = [:]
 
     // MARK: - Init / folder lifetime access
 
-    private var openedFolders: [MediaType: URL] = [:]
-    private var openedLibraryFolders: [MediaType: URL] = [:]
+    /// Folders currently held open for security-scoped access, keyed by
+    /// their bookmark's UserDefaults key.
+    private var openedFolders: [String: URL] = [:]
 
     private init() {
         for type in MediaType.allCases {
-            refreshFolderAccess(for: type)
-            refreshLibraryFolderAccess(for: type)
+            refreshAccess(bookmarkKey: SettingsKeys.downloadFolderBookmark(type))
+            refreshAccess(bookmarkKey: SettingsKeys.libraryFolderBookmark(type))
         }
         cleanUpOrphans()
-        cleanUpTranscodeTemps()
         populateDownloadedIDCache()
-        restorePendingTranscodes()
-        observeTermination()
-    }
-
-    private func observeTermination() {
-        NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.handleAppTermination()
-        }
-    }
-
-    private func handleAppTermination() {
-        let behaviorRaw = UserDefaults.standard.string(forKey: SettingsKeys.queueOnClose)
-            ?? QueueOnCloseBehavior.abandonQueue.rawValue
-        guard QueueOnCloseBehavior(rawValue: behaviorRaw) == .keepQueue,
-              !transcodeQueue.isEmpty else { return }
-        let pending = transcodeQueue.map { SavedPendingTranscode(itemID: $0.id, mediaType: $0.mediaType) }
-        if let data = try? JSONEncoder().encode(pending) {
-            UserDefaults.standard.set(data, forKey: SettingsKeys.savedTranscodeQueue)
-        }
     }
 
     private func populateDownloadedIDCache() {
@@ -164,57 +55,7 @@ final class DownloadManager {
                 guard let filename = entry.filename else { return entry.item.id }
                 return FileManager.default.fileExists(atPath: folder.appending(path: filename).path) ? entry.item.id : nil
             })
-            setDownloadedIDs(ids, for: type)
-        }
-    }
-
-    private func setDownloadedIDs(_ ids: Set<String>, for type: MediaType) {
-        switch type {
-        case .movies: downloadedMovieIDs = ids
-        case .tvShows: downloadedTVShowIDs = ids
-        case .music: downloadedMusicIDs = ids
-        }
-    }
-
-    private func cleanUpTranscodeTemps() {
-        for type in MediaType.allCases {
-            guard let folder = Self.resolvedFolder(for: type),
-                  let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil) else { continue }
-            for case let url as URL in enumerator where url.lastPathComponent.hasSuffix(".transcoding.tmp") {
-                try? FileManager.default.removeItem(at: url)
-            }
-        }
-    }
-
-    private func restorePendingTranscodes() {
-        guard let data = UserDefaults.standard.data(forKey: SettingsKeys.savedTranscodeQueue),
-              let pending = try? JSONDecoder().decode([SavedPendingTranscode].self, from: data),
-              !pending.isEmpty else { return }
-        UserDefaults.standard.removeObject(forKey: SettingsKeys.savedTranscodeQueue)
-        // Launch all items concurrently; TranscodePool limits actual encode concurrency.
-        for entry in pending {
-            guard let folder = Self.resolvedFolder(for: entry.mediaType) else { continue }
-            let index = Self.readIndexFromFolder(folder)
-            guard let indexEntry = index[entry.itemID],
-                  let filename = indexEntry.filename else { continue }
-            let fileURL = folder.appending(path: filename)
-            guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
-
-            let task = Task<URL?, Never> { [weak self] in
-                await self?.maybeTranscode(item: indexEntry.item, fileURL: fileURL, folder: folder)
-            }
-            activeTasks[entry.itemID] = task
-
-            let itemID = entry.itemID
-            Task { [weak self] in
-                if let url = await task.value {
-                    let newRelative = String(url.path.dropFirst(folder.path.count + 1))
-                    var updatedIndex = Self.readIndexFromFolder(folder)
-                    updatedIndex[itemID] = DownloadIndexEntry(item: indexEntry.item, filename: newRelative)
-                    Self.writeIndex(updatedIndex, to: folder)
-                }
-                self?.activeTasks.removeValue(forKey: itemID)
-            }
+            downloadedIDs[type] = ids
         }
     }
 
@@ -239,40 +80,26 @@ final class DownloadManager {
                     dirty = true
                 }
             }
+            // Older builds saved Plex tokens in poster URLs; writeIndex strips them.
+            if index.values.contains(where: { $0.item != $0.item.removingPlexTokens }) {
+                dirty = true
+            }
             if dirty { Self.writeIndex(index, to: folder) }
         }
     }
 
-    private func refreshFolderAccess(for type: MediaType) {
-        if let old = openedFolders[type] {
-            old.stopAccessingSecurityScopedResource()
-            openedFolders[type] = nil
-        }
-        if let folder = Self.resolvedFolder(for: type),
-           folder.startAccessingSecurityScopedResource() {
-            openedFolders[type] = folder
-        }
-    }
-
-    private func refreshLibraryFolderAccess(for type: MediaType) {
-        if let old = openedLibraryFolders[type] {
-            old.stopAccessingSecurityScopedResource()
-            openedLibraryFolders[type] = nil
-        }
-        if let folder = Self.resolvedLibraryFolder(for: type),
-           folder.startAccessingSecurityScopedResource() {
-            openedLibraryFolders[type] = folder
+    private func refreshAccess(bookmarkKey: String) {
+        openedFolders.removeValue(forKey: bookmarkKey)?.stopAccessingSecurityScopedResource()
+        if let folder = Self.resolveBookmark(bookmarkKey), folder.startAccessingSecurityScopedResource() {
+            openedFolders[bookmarkKey] = folder
         }
     }
 
     // MARK: - Folder configuration
 
+    /// Download folder: files downloaded from servers.
     static func setFolder(_ url: URL, for type: MediaType) {
-        if let bookmark = try? url.bookmarkData(options: .withSecurityScope) {
-            UserDefaults.standard.set(bookmark, forKey: SettingsKeys.downloadFolderBookmark(type))
-            UserDefaults.standard.set(url.path, forKey: SettingsKeys.downloadFolderPath(type))
-        }
-        shared.refreshFolderAccess(for: type)
+        saveBookmark(for: url, bookmarkKey: SettingsKeys.downloadFolderBookmark(type), pathKey: SettingsKeys.downloadFolderPath(type))
     }
 
     static func folderPath(for type: MediaType) -> String? {
@@ -280,24 +107,12 @@ final class DownloadManager {
     }
 
     static func resolvedFolder(for type: MediaType) -> URL? {
-        guard let bookmark = UserDefaults.standard.data(forKey: SettingsKeys.downloadFolderBookmark(type)) else {
-            return nil
-        }
-        var stale = false
-        return try? URL(
-            resolvingBookmarkData: bookmark,
-            options: .withSecurityScope,
-            relativeTo: nil,
-            bookmarkDataIsStale: &stale
-        )
+        resolveBookmark(SettingsKeys.downloadFolderBookmark(type))
     }
 
+    /// Library folder: the user's own media, scanned by LocalLibraryScanner.
     static func setLibraryFolder(_ url: URL, for type: MediaType) {
-        if let bookmark = try? url.bookmarkData(options: .withSecurityScope) {
-            UserDefaults.standard.set(bookmark, forKey: SettingsKeys.libraryFolderBookmark(type))
-            UserDefaults.standard.set(url.path, forKey: SettingsKeys.libraryFolderPath(type))
-        }
-        shared.refreshLibraryFolderAccess(for: type)
+        saveBookmark(for: url, bookmarkKey: SettingsKeys.libraryFolderBookmark(type), pathKey: SettingsKeys.libraryFolderPath(type))
     }
 
     static func libraryFolderPath(for type: MediaType) -> String? {
@@ -305,16 +120,34 @@ final class DownloadManager {
     }
 
     static func resolvedLibraryFolder(for type: MediaType) -> URL? {
-        guard let bookmark = UserDefaults.standard.data(forKey: SettingsKeys.libraryFolderBookmark(type)) else {
-            return nil
+        resolveBookmark(SettingsKeys.libraryFolderBookmark(type))
+    }
+
+    private static func saveBookmark(for url: URL, bookmarkKey: String, pathKey: String) {
+        if let bookmark = try? url.bookmarkData(options: .withSecurityScope) {
+            UserDefaults.standard.set(bookmark, forKey: bookmarkKey)
+            UserDefaults.standard.set(url.path, forKey: pathKey)
         }
+        resolvedBookmarks[bookmarkKey] = nil
+        shared.refreshAccess(bookmarkKey: bookmarkKey)
+    }
+
+    /// Resolved folder URLs by bookmark key. Resolving a bookmark is a system
+    /// call, and folders are looked up for every poster on every redraw.
+    private static var resolvedBookmarks: [String: URL] = [:]
+
+    private static func resolveBookmark(_ key: String) -> URL? {
+        if let cached = resolvedBookmarks[key] { return cached }
+        guard let bookmark = UserDefaults.standard.data(forKey: key) else { return nil }
         var stale = false
-        return try? URL(
+        let url = try? URL(
             resolvingBookmarkData: bookmark,
             options: .withSecurityScope,
             relativeTo: nil,
             bookmarkDataIsStale: &stale
         )
+        resolvedBookmarks[key] = url
+        return url
     }
 
     static let mediaExtensions: Set<String> = [
@@ -348,8 +181,7 @@ final class DownloadManager {
     }
 
     static func libraryIndexedEntries(for type: MediaType) -> [DownloadIndexEntry] {
-        guard let folder = resolvedLibraryFolder(for: type) else { return [] }
-        return Array(readIndexFromFolder(folder).values)
+        entries(in: resolvedLibraryFolder(for: type))
     }
 
     static func mergeLibraryIndex(_ entries: [DownloadIndexEntry], for type: MediaType) {
@@ -362,12 +194,7 @@ final class DownloadManager {
     }
 
     func localLibraryURL(for item: MediaItem) -> URL? {
-        guard let folder = Self.resolvedLibraryFolder(for: item.type) else { return nil }
-        let index = Self.readIndexFromFolder(folder)
-        guard let entry = index[item.id], let filename = entry.filename else { return nil }
-        let fileURL = folder.appending(path: filename)
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
-        return fileURL
+        Self.indexedFileURL(for: item, in: Self.resolvedLibraryFolder(for: item.type))
     }
 
     static func limitBytes(for type: MediaType) -> Int64 {
@@ -422,24 +249,8 @@ final class DownloadManager {
         }
         writeIndex(index, to: folder)
 
-        switch type {
-        case .movies: shared.downloadedMovieIDs = []
-        case .tvShows: shared.downloadedTVShowIDs = []
-        case .music: shared.downloadedMusicIDs = []
-        }
-
-        if let enumerator = FileManager.default.enumerator(
-            at: folder,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) {
-            for case let fileURL as URL in enumerator {
-                let ext = fileURL.pathExtension.lowercased()
-                if ext == "jpg" || ext == "jpeg" || ext == "png" {
-                    try? FileManager.default.removeItem(at: fileURL)
-                }
-            }
-        }
+        shared.downloadedIDs[type] = []
+        removeArtwork(in: folder)
 
         if let enumerator = FileManager.default.enumerator(
             at: folder,
@@ -462,19 +273,20 @@ final class DownloadManager {
     
     static func clearDownloadedArtwork() {
         for type in MediaType.allCases {
-            guard let folder = resolvedFolder(for: type) else { continue }
-            if let enumerator = FileManager.default.enumerator(
-                at: folder,
-                includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
-            ) {
-                for case let fileURL as URL in enumerator {
-                    let ext = fileURL.pathExtension.lowercased()
-                    if ext == "jpg" || ext == "jpeg" || ext == "png" {
-                        try? FileManager.default.removeItem(at: fileURL)
-                    }
-                }
-            }
+            if let folder = resolvedFolder(for: type) { removeArtwork(in: folder) }
+        }
+    }
+
+    /// Deletes the poster images saved next to downloads.
+    private static func removeArtwork(in folder: URL) {
+        guard let enumerator = FileManager.default.enumerator(
+            at: folder,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        for case let fileURL as URL in enumerator
+        where ["jpg", "jpeg", "png"].contains(fileURL.pathExtension.lowercased()) {
+            try? FileManager.default.removeItem(at: fileURL)
         }
     }
 
@@ -487,20 +299,32 @@ final class DownloadManager {
         folder.appending(path: ".qp-downloads.json")
     }
 
+    /// Parsed indexes by folder path. The app is the only writer of these
+    /// files, so the cache is kept current by writeIndex(_:to:).
+    private static var indexCache: [String: [String: DownloadIndexEntry]] = [:]
+
     private static func readIndexFromFolder(_ folder: URL) -> [String: DownloadIndexEntry] {
-        let url = indexURL(in: folder)
-        guard let data = try? Data(contentsOf: url) else { return [:] }
-        return (try? JSONDecoder().decode([String: DownloadIndexEntry].self, from: data)) ?? [:]
+        if let cached = indexCache[folder.path] { return cached }
+        let index = (try? Data(contentsOf: indexURL(in: folder)))
+            .flatMap { try? JSONDecoder().decode([String: DownloadIndexEntry].self, from: $0) } ?? [:]
+        indexCache[folder.path] = index
+        return index
     }
 
     private static func writeIndex(_ index: [String: DownloadIndexEntry], to folder: URL) {
+        let index = index.mapValues { DownloadIndexEntry(item: $0.item.removingPlexTokens, filename: $0.filename) }
+        indexCache[folder.path] = index
         guard let data = try? JSONEncoder().encode(index) else { return }
-        try? data.write(to: indexURL(in: folder))
+        // Atomic so a crash mid-write can't leave a truncated index behind.
+        try? data.write(to: indexURL(in: folder), options: .atomic)
     }
 
     static func indexedEntries(for type: MediaType) -> [DownloadIndexEntry] {
-        guard let folder = resolvedFolder(for: type) else { return [] }
-        return Array(readIndexFromFolder(folder).values)
+        entries(in: resolvedFolder(for: type))
+    }
+
+    private static func entries(in folder: URL?) -> [DownloadIndexEntry] {
+        folder.map { Array(readIndexFromFolder($0).values) } ?? []
     }
 
     func isDownloaded(_ item: MediaItem) -> Bool {
@@ -514,12 +338,15 @@ final class DownloadManager {
     }
 
     func localURL(for item: MediaItem) -> URL? {
-        guard let folder = Self.resolvedFolder(for: item.type) else { return nil }
-        let index = Self.readIndexFromFolder(folder)
-        guard let entry = index[item.id], let filename = entry.filename else { return nil }
+        Self.indexedFileURL(for: item, in: Self.resolvedFolder(for: item.type))
+    }
+
+    /// The indexed file for `item` in `folder`, if it still exists on disk.
+    private static func indexedFileURL(for item: MediaItem, in folder: URL?) -> URL? {
+        guard let folder,
+              let filename = readIndexFromFolder(folder)[item.id]?.filename else { return nil }
         let fileURL = folder.appending(path: filename)
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
-        return fileURL
+        return FileManager.default.fileExists(atPath: fileURL.path) ? fileURL : nil
     }
 
     func download(_ item: MediaItem, appState: AppState) {
@@ -537,7 +364,7 @@ final class DownloadManager {
         guard Self.resolvedFolder(for: item.type) != nil else {
             Self.alert(
                 title: "No Download Folder",
-                message: "Choose a folder for \(item.type.rawValue) in Settings → Data → Downloads first."
+                message: "Choose a folder for \(item.type.title) in Settings → Data → Downloads first."
             )
             return
         }
@@ -614,7 +441,7 @@ final class DownloadManager {
             if showAlerts {
                 Self.alert(
                     title: "No Download Folder",
-                    message: "Choose a folder for \(item.type.rawValue) in Settings → Data → Downloads first."
+                    message: "Choose a folder for \(item.type.title) in Settings → Data → Downloads first."
                 )
             }
             return false
@@ -622,12 +449,12 @@ final class DownloadManager {
         
         downloadingIDs.insert(item.id)
         downloadingItems.append(item)
-        DispatchQueue.main.async { self.downloadProgress[item.id] = 0.0 }
+        downloadProgress[item.id] = 0.0
         
         defer {
             downloadingIDs.remove(item.id)
             downloadingItems.removeAll { $0.id == item.id }
-            DispatchQueue.main.async { self.downloadProgress.removeValue(forKey: item.id) }
+            downloadProgress.removeValue(forKey: item.id)
         }
         
         do {
@@ -642,7 +469,7 @@ final class DownloadManager {
                         let formatter = ByteCountFormatter()
                         Self.alert(
                             title: "Not Enough Download Storage",
-                            message: "\(item.title) needs \(formatter.string(fromByteCount: max(expected, 0))), but \(item.type.rawValue) downloads are limited to \(formatter.string(fromByteCount: limit)) and \(formatter.string(fromByteCount: usage)) is already used. Increase the allocation in Settings → Data or remove other downloads."
+                            message: "\(item.title) needs \(formatter.string(fromByteCount: max(expected, 0))), but \(item.type.title) downloads are limited to \(formatter.string(fromByteCount: limit)) and \(formatter.string(fromByteCount: usage)) is already used. Increase the allocation in Settings → Data or remove other downloads."
                         )
                     }
                     return false
@@ -707,28 +534,9 @@ final class DownloadManager {
 
             Self.writeIndex(index, to: folder)
 
-            switch item.type {
-            case .movies: downloadedMovieIDs.insert(item.id)
-            case .tvShows: downloadedTVShowIDs.insert(item.id)
-            case .music: downloadedMusicIDs.insert(item.id)
-            }
+            downloadedIDs[item.type, default: []].insert(item.id)
 
-            var currentFileURL = destination
-            if item.type != .music {
-                let task = Task<URL?, Never> {
-                    await self.maybeTranscode(item: item, fileURL: destination, folder: folder)
-                }
-                activeTasks[item.id] = task
-                if let transcodedURL = await task.value {
-                    currentFileURL = transcodedURL
-                    let newRelative = String(transcodedURL.path.dropFirst(folder.path.count + 1))
-                    var updatedIndex = Self.readIndexFromFolder(folder)
-                    updatedIndex[item.id] = DownloadIndexEntry(item: item, filename: newRelative)
-                    Self.writeIndex(updatedIndex, to: folder)
-                }
-                activeTasks.removeValue(forKey: item.id)
-            }
-
+            let currentFileURL = destination
             await downloadArtwork(for: item, fileURL: currentFileURL, destinationFolder: currentFileURL.deletingLastPathComponent())
 
             if item.kind == .episode {
@@ -828,7 +636,7 @@ final class DownloadManager {
     private func downloadArtwork(from posterURL: URL, stem: String, destinationFolder: URL) async {
         let preferredExt = posterURL.pathExtension.lowercased() == "png" ? "png" : "jpg"
         do {
-            let (tempURL, response) = try await URLSession.shared.download(from: posterURL)
+            let (tempURL, response) = try await URLSession.shared.download(for: ArtworkCache.request(for: posterURL))
             var finalExt = preferredExt
             if let mime = response.mimeType {
                 if mime.contains("png") { finalExt = "png" }
@@ -844,7 +652,8 @@ final class DownloadManager {
         }
     }
 
-    private nonisolated static func sanitizePathComponent(_ s: String) -> String {
+    /// Makes a title safe to use as a file or folder name.
+    nonisolated static func sanitizePathComponent(_ s: String) -> String {
         var result = s.replacing("/", with: "-").replacing(":", with: "-")
         while result.hasPrefix(".") { result = String(result.dropFirst()) }
         return result.isEmpty ? "Unknown" : result
@@ -874,16 +683,10 @@ final class DownloadManager {
                 seasonName = pt
             } else if let idxStr = item.attributes["parentIndex"], let idx = Int(idxStr) {
                 seasonName = "Season \(String(format: "%02d", idx))"
+            } else if let match = filename.firstMatch(of: /[Ss](\d{1,2})[Ee]\d{1,2}/), let num = Int(match.1) {
+                seasonName = "Season \(String(format: "%02d", num))"
             } else {
-                let regex = try? NSRegularExpression(pattern: #"[Ss](\d{1,2})[Ee]\d{1,2}"#)
-                let range = NSRange(filename.startIndex..., in: filename)
-                if let match = regex?.firstMatch(in: filename, range: range),
-                   let numRange = Range(match.range(at: 1), in: filename),
-                   let num = Int(filename[numRange]) {
-                    seasonName = "Season \(String(format: "%02d", num))"
-                } else {
-                    seasonName = nil
-                }
+                seasonName = nil
             }
 
             if let show = showName.map(sanitizePathComponent), let season = seasonName.map(sanitizePathComponent) {
@@ -940,147 +743,4 @@ final class DownloadManager {
         NSApplication.shared.activate()
         alert.runModal()
     }
-
-    // MARK: - Post-download transcoding
-
-    private func maybeTranscode(item: MediaItem, fileURL: URL, folder: URL) async -> URL? {
-        let modeRaw = UserDefaults.standard.string(forKey: "transcodeMode") ?? "Automatic"
-        if modeRaw == "Disabled" { return nil }
-
-        let thresholdRaw = UserDefaults.standard.string(forKey: SettingsKeys.transcodeThreshold(item.type)) ?? ""
-        let presetRaw = UserDefaults.standard.string(forKey: SettingsKeys.transcodePreset(item.type)) ?? ""
-
-        guard let threshold = TranscodeThreshold(rawValue: thresholdRaw),
-              threshold != .disabled,
-              let thresholdBytes = threshold.bytes else { return nil }
-
-        guard let fileSize = try? fileURL.resourceValues(forKeys: [.totalFileSizeKey]).totalFileSize,
-              Int64(fileSize) >= thresholdBytes else { return nil }
-
-        var finalPreset: TranscodePreset? = TranscodePreset(rawValue: presetRaw)
-
-        if modeRaw == "Prompted" {
-            let userSelectedPreset = await withCheckedContinuation { continuation in
-                let request = TranscodePromptRequest(item: item, preset: finalPreset, continuation: continuation)
-                DispatchQueue.main.async {
-                    self.pendingPrompts[item.id] = request
-                }
-            }
-            guard let selected = userSelectedPreset else { return nil }
-            finalPreset = selected
-        }
-
-        guard let preset = finalPreset else { return nil }
-
-        // Wait for a hardware encoder slot. Returns early if cancelled while queued.
-        do {
-            try await transcodePool.waitForSlot()
-        } catch {
-            return nil
-        }
-
-        // Show in the Converting UI now that encoding is about to begin.
-        transcodeQueue.append(TranscodeQueueEntry(id: item.id, title: item.title, posterURL: item.posterURL, mediaType: item.type, progress: 0))
-
-        let pool = transcodePool
-        let itemID = item.id
-        defer {
-            Task { await pool.release() }
-            Task { @MainActor [weak self] in self?.transcodeQueue.removeAll { $0.id == itemID } }
-        }
-
-        do {
-            return try await VideoTranscoder.transcode(fileURL: fileURL, preset: preset) { [weak self] progress in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    if let idx = self.transcodeQueue.firstIndex(where: { $0.id == itemID }) {
-                        self.transcodeQueue[idx].progress = progress
-                    }
-                }
-            }
-        } catch {
-            print("[Transcode] Failed for \(item.title): \(error.localizedDescription)")
-            return nil
-        }
-    }
-
-    /// Triggers a manual transcode, bypassing the automatic threshold check.
-    private func forceTranscode(item: MediaItem, preset: TranscodePreset) async {
-        guard let folder = Self.resolvedFolder(for: item.type) else { return }
-        guard let fileURL = localURL(for: item) else { return }
-
-        // Respect the hardware engine pool so manual transcodes don't pile on top of automatic ones.
-        do {
-            try await transcodePool.waitForSlot()
-        } catch {
-            return
-        }
-
-        DispatchQueue.main.async {
-            self.transcodeQueue.append(TranscodeQueueEntry(id: item.id, title: item.title, posterURL: item.posterURL, mediaType: item.type, progress: 0))
-        }
-
-        let pool = transcodePool
-        let itemID = item.id
-        defer {
-            Task { await pool.release() }
-            DispatchQueue.main.async { self.transcodeQueue.removeAll { $0.id == itemID } }
-        }
-
-        do {
-            let transcodedURL = try await VideoTranscoder.transcode(fileURL: fileURL, preset: preset) { [weak self] progress in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    if let idx = self.transcodeQueue.firstIndex(where: { $0.id == itemID }) {
-                        self.transcodeQueue[idx].progress = progress
-                    }
-                }
-            }
-            let newRelative = String(transcodedURL.path.dropFirst(folder.path.count + 1))
-            var updatedIndex = Self.readIndexFromFolder(folder)
-            updatedIndex[item.id] = DownloadIndexEntry(item: item, filename: newRelative)
-            Self.writeIndex(updatedIndex, to: folder)
-        } catch {
-            print("[Transcode] Manual transcode failed: \(error.localizedDescription)")
-        }
-    }
-
-    func applyStorageOptimisationSettings() {
-        guard !activeTasks.isEmpty else { return }
-
-        // Snapshot queued items so we can restart them with the new settings.
-        let entriesToRestart = transcodeQueue
-
-        // Cancel every active transcode; the pool slots free up as they unwind.
-        for task in activeTasks.values { task.cancel() }
-        activeTasks.removeAll()
-
-        // Restart each item. Pool limits encoding concurrency while the cancelled
-        // transcodes drain their remaining pool slots.
-        for entry in entriesToRestart {
-            guard let folder = Self.resolvedFolder(for: entry.mediaType) else { continue }
-            let index = Self.readIndexFromFolder(folder)
-            guard let indexEntry = index[entry.id],
-                  let filename = indexEntry.filename else { continue }
-            let fileURL = folder.appending(path: filename)
-            guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
-
-            let task = Task<URL?, Never> { [weak self] in
-                await self?.maybeTranscode(item: indexEntry.item, fileURL: fileURL, folder: folder)
-            }
-            activeTasks[entry.id] = task
-
-            let capturedID = entry.id
-            Task { [weak self] in
-                if let url = await task.value {
-                    let newRelative = String(url.path.dropFirst(folder.path.count + 1))
-                    var updatedIndex = Self.readIndexFromFolder(folder)
-                    updatedIndex[capturedID] = DownloadIndexEntry(item: indexEntry.item, filename: newRelative)
-                    Self.writeIndex(updatedIndex, to: folder)
-                }
-                self?.activeTasks.removeValue(forKey: capturedID)
-            }
-        }
-    }
 }
-#endif // os(macOS)

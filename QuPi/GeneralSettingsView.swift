@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 import AppKit
 import ServiceManagement
@@ -79,6 +78,7 @@ struct GeneralSettingsView: View {
     }
 }
 
+#if !SWIFT_PACKAGE // Previews need Xcode; SwiftPM builds skip them.
 #Preview("General") {
     GeneralSettingsView()
         .frame(width: 520, height: 560)

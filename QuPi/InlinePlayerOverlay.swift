@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 
 /// PiP-style playback controls overlaid on the now-playing carousel cell's
@@ -6,7 +5,9 @@ import SwiftUI
 /// a draggable glass scrubber at the bottom. Sized to fit the 110×110 artwork.
 struct InlinePlayerOverlay: View {
     var isPlaying: Bool
-    var progress: Double = 0
+    /// Read inside this view's body, so the twice-a-second playback time
+    /// updates redraw only the overlay, not the whole carousel.
+    var progress: () -> Double = { 0 }
     var canGoPrevious = false
     var canGoNext = false
     let onPlayPause: () -> Void
@@ -21,7 +22,7 @@ struct InlinePlayerOverlay: View {
     @State private var dragProgress: Double?
 
     private var displayProgress: Double {
-        dragProgress ?? max(0, min(1, progress))
+        dragProgress ?? max(0, min(1, progress()))
     }
 
     var body: some View {
@@ -116,4 +117,3 @@ struct InlinePlayerOverlay: View {
         .glassEffect()
     }
 }
-#endif // os(macOS)

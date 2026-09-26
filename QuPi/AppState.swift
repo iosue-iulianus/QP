@@ -2,12 +2,10 @@ import Foundation
 import Observation
 import AVFoundation
 import MediaPlayer
-#if os(macOS)
 import AppKit
-#endif
 
 /// Shared app state managing UI sections, drill-down paths, and catalogs.
-/// Merges Plex, Jellyfin, or a built-in sample fallback.
+/// Merges Plex, Jellyfin and local library providers.
 @MainActor
 @Observable
 final class AppState {
@@ -26,56 +24,44 @@ final class AppState {
     var childErrorsByItemID: [String: String] = [:]
 
     init() {
+        PlaybackProgressStore.removeSavedPlexTokens()
         setupMediaKeys()
         
         Task {
+            await ensureLibrarySections()
             if providers.isEmpty {
                 UserDefaults.standard.set("accounts", forKey: "selectedSettingsTab")
-#if os(macOS)
                 NSApplication.shared.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-#endif
             }
         }
     }
 
     private func setupMediaKeys() {
         let center = MPRemoteCommandCenter.shared()
-        center.playCommand.addTarget { [weak self] _ in
-            guard let self = self, UserDefaults.standard.bool(forKey: SettingsKeys.useMediaKeys) else { return .commandFailed }
-            Task { @MainActor in self.togglePlayPause() }
+        for command in [center.playCommand, center.pauseCommand, center.togglePlayPauseCommand] {
+            handleMediaKey(command) { $0.togglePlayPause() }
+        }
+        handleMediaKey(center.nextTrackCommand) { $0.skipFromMediaKey(1) }
+        handleMediaKey(center.previousTrackCommand) { $0.skipFromMediaKey(-1) }
+    }
+
+    /// Routes a media key to `action` while "Use Media Keys" is enabled.
+    private func handleMediaKey(_ command: MPRemoteCommand, _ action: @escaping @MainActor @Sendable (AppState) -> Void) {
+        command.addTarget { [weak self] _ in
+            guard let self, UserDefaults.standard.bool(forKey: SettingsKeys.useMediaKeys) else { return .commandFailed }
+            Task { @MainActor in action(self) }
             return .success
         }
-        center.pauseCommand.addTarget { [weak self] _ in
-            guard let self = self, UserDefaults.standard.bool(forKey: SettingsKeys.useMediaKeys) else { return .commandFailed }
-            Task { @MainActor in self.togglePlayPause() }
-            return .success
-        }
-        center.togglePlayPauseCommand.addTarget { [weak self] _ in
-            guard let self = self, UserDefaults.standard.bool(forKey: SettingsKeys.useMediaKeys) else { return .commandFailed }
-            Task { @MainActor in self.togglePlayPause() }
-            return .success
-        }
-        center.nextTrackCommand.addTarget { [weak self] _ in
-            guard let self = self, UserDefaults.standard.bool(forKey: SettingsKeys.useMediaKeys) else { return .commandFailed }
-            Task { @MainActor in
-                if self.inlinePlaylist != nil {
-                    self.playInlineNeighbor(1)
-                } else {
-                    NotificationCenter.default.post(name: NSNotification.Name("QP.MediaKeyNext"), object: nil)
-                }
-            }
-            return .success
-        }
-        center.previousTrackCommand.addTarget { [weak self] _ in
-            guard let self = self, UserDefaults.standard.bool(forKey: SettingsKeys.useMediaKeys) else { return .commandFailed }
-            Task { @MainActor in
-                if self.inlinePlaylist != nil {
-                    self.playInlineNeighbor(-1)
-                } else {
-                    NotificationCenter.default.post(name: NSNotification.Name("QP.MediaKeyPrevious"), object: nil)
-                }
-            }
-            return .success
+    }
+
+    /// Next/previous track: steps through the inline playlist, or asks the
+    /// open player window to handle it.
+    private func skipFromMediaKey(_ offset: Int) {
+        if inlinePlaylist != nil {
+            playInlineNeighbor(offset)
+        } else {
+            let name = offset > 0 ? "QP.MediaKeyNext" : "QP.MediaKeyPrevious"
+            NotificationCenter.default.post(name: NSNotification.Name(name), object: nil)
         }
     }
 
@@ -85,14 +71,36 @@ final class AppState {
         var names: [String] = []
         if !plexConfigurations.isEmpty { names.append("Plex") }
         if jellyfinConfiguration != nil { names.append("Jellyfin") }
-        return names.isEmpty ? "Sample catalog" : names.joined(separator: " + ")
+        return names.isEmpty ? "No sources" : names.joined(separator: " + ")
     }
 
     // MARK: - Backend configuration
 
+    /// Server settings from UserDefaults and the Keychain. Cached because
+    /// Keychain reads are slow and these are needed on every catalog access
+    /// and menu redraw. Cleared by resetCatalog(), which every account
+    /// change calls. Keeping the PlexConfiguration objects also keeps a
+    /// working fallback URL for the rest of the session.
+    @ObservationIgnored private var cachedSources: (plex: [PlexConfiguration], jellyfin: JellyfinConfiguration?)?
+
+    private var sources: (plex: [PlexConfiguration], jellyfin: JellyfinConfiguration?) {
+        if let cachedSources { return cachedSources }
+        let loaded = (plex: Self.loadPlexConfigurations(), jellyfin: Self.loadJellyfinConfiguration())
+        cachedSources = loaded
+        let tokens = loaded.plex.flatMap { configuration in
+            ([configuration.serverURL] + (configuration.fallbackURLs ?? [])).map { (ArtworkCache.addressKey($0), configuration.token) }
+        }
+        ArtworkCache.setPlexTokens(Dictionary(tokens, uniquingKeysWith: { first, _ in first }))
+        return loaded
+    }
+
     /// One configuration per connected server that has a usable URL and
     /// token; their catalogs are merged.
-    var plexConfigurations: [PlexConfiguration] {
+    var plexConfigurations: [PlexConfiguration] { sources.plex }
+
+    var jellyfinConfiguration: JellyfinConfiguration? { sources.jellyfin }
+
+    private static func loadPlexConfigurations() -> [PlexConfiguration] {
         PlexServerStore.load().compactMap { server in
             guard let url = URL(string: server.urlString),
                   let token = PlexServerStore.token(for: server.id), !token.isEmpty else {
@@ -108,11 +116,13 @@ final class AppState {
         }
     }
 
-    var jellyfinConfiguration: JellyfinConfiguration? {
+    private static func loadJellyfinConfiguration() -> JellyfinConfiguration? {
         let defaults = UserDefaults.standard
         guard let urlString = defaults.string(forKey: SettingsKeys.jellyfinServerURL),
               !urlString.isEmpty,
-              let url = URL(string: urlString),
+              // Sign-in saves the working URL; this also covers addresses
+              // saved without a scheme by older builds.
+              let url = serverURLCandidates(urlString).first,
               let userID = defaults.string(forKey: SettingsKeys.jellyfinUserID), !userID.isEmpty,
               let token = KeychainStore.string(for: KeychainKeys.jellyfinToken), !token.isEmpty else {
             return nil
@@ -164,19 +174,20 @@ final class AppState {
 
     // Sort preferences are stored (not UserDefaults-computed) so @Observable
     // can track changes and re-render displayedItems reactively without a catalog reload.
-    var movieSortRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.movieSort) ?? MovieSort.byTitle.rawValue {
+    // Movies and TV default to newest additions first.
+    var movieSortRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.movieSort) ?? LibrarySort.byDateAdded.rawValue {
         didSet { UserDefaults.standard.set(movieSortRaw, forKey: SettingsKeys.movieSort) }
     }
-    var movieSortDirectionRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.movieSortDirection) ?? SortDirection.ascending.rawValue {
+    var movieSortDirectionRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.movieSortDirection) ?? SortDirection.descending.rawValue {
         didSet { UserDefaults.standard.set(movieSortDirectionRaw, forKey: SettingsKeys.movieSortDirection) }
     }
-    var tvSortRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.tvSort) ?? TVSort.byTitle.rawValue {
+    var tvSortRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.tvSort) ?? LibrarySort.byDateAdded.rawValue {
         didSet { UserDefaults.standard.set(tvSortRaw, forKey: SettingsKeys.tvSort) }
     }
-    var tvSortDirectionRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.tvSortDirection) ?? SortDirection.ascending.rawValue {
+    var tvSortDirectionRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.tvSortDirection) ?? SortDirection.descending.rawValue {
         didSet { UserDefaults.standard.set(tvSortDirectionRaw, forKey: SettingsKeys.tvSortDirection) }
     }
-    var musicSortRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.musicSort) ?? MusicSort.byTitle.rawValue {
+    var musicSortRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.musicSort) ?? LibrarySort.byTitle.rawValue {
         didSet { UserDefaults.standard.set(musicSortRaw, forKey: SettingsKeys.musicSort) }
     }
     var musicSortDirectionRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.musicSortDirection) ?? SortDirection.ascending.rawValue {
@@ -192,42 +203,100 @@ final class AppState {
         didSet { UserDefaults.standard.set(musicLocalFirst, forKey: SettingsKeys.musicLocalFirst) }
     }
 
-    /// Session-only flag — not persisted. Hides all remote providers when true.
+    /// Session-only flag, not persisted. Hides all remote providers when
+    /// true; resetCatalog() reloads the sections and whatever is open.
     var isOfflineMode: Bool = false {
-        didSet {
-            resetCatalog()
-            if isSearchActive {
-                for section in enabledSections { Task { await load(section, force: true) } }
-            } else if let section = expandedSection {
-                Task { await load(section, force: true) }
-            }
-        }
+        didSet { resetCatalog() }
     }
 
-    private var movieSort: MovieSort { MovieSort(rawValue: movieSortRaw) ?? .byTitle }
-    private var movieSortDirection: SortDirection { SortDirection(rawValue: movieSortDirectionRaw) ?? .ascending }
-    private var tvSort: TVSort { TVSort(rawValue: tvSortRaw) ?? .byTitle }
-    private var tvSortDirection: SortDirection { SortDirection(rawValue: tvSortDirectionRaw) ?? .ascending }
-    private var musicSort: MusicSort { MusicSort(rawValue: musicSortRaw) ?? .byTitle }
-    private var musicSortDirection: SortDirection { SortDirection(rawValue: musicSortDirectionRaw) ?? .ascending }
-
-    /// The sections shown in the dropdown, per the Preferences toggles.
+    /// The sections shown in the dropdown: one per library, then Playlists
+    /// and Continue… when enabled in Settings (both off by default).
     var enabledSections: [MenuSection] {
-        MenuSection.allCases.filter { section in
+        let fixed = [MenuSection.playlists, .continueItems].filter { section in
             if section == .continueItems && !isOfflineMode && plexConfigurations.isEmpty && jellyfinConfiguration == nil {
                 return false
             }
-            let key = SettingsKeys.sectionEnabled(section)
-            guard UserDefaults.standard.object(forKey: key) != nil else {
-                return section.enabledByDefault
+            return UserDefaults.standard.bool(forKey: SettingsKeys.sectionEnabled(section))
+        }
+        return (librarySections ?? []) + fixed
+    }
+
+    // MARK: - Library sections
+
+    /// One section per library name and type across all providers, in
+    /// provider order. Nil while loading.
+    private(set) var librarySections: [MenuSection]?
+    /// Shown instead of sections when no provider could list its libraries.
+    private(set) var librarySectionsError: String?
+    /// The provider libraries behind each library section.
+    @ObservationIgnored private var sectionLibraries: [MenuSection.ID: [(providerID: String, library: MediaLibrary)]] = [:]
+    @ObservationIgnored private var librarySectionsTask: Task<Void, Never>?
+    /// Bumped by resetCatalog() so a superseded load discards its results.
+    @ObservationIgnored private var librarySectionsGeneration = 0
+
+    /// Loads the library sections once; concurrent callers share the request.
+    func ensureLibrarySections() async {
+        if librarySections != nil { return }
+        let task = librarySectionsTask ?? Task { await loadLibrarySections() }
+        librarySectionsTask = task
+        await task.value
+    }
+
+    private func loadLibrarySections() async {
+        let generation = librarySectionsGeneration
+        let sources = providers
+        let results = await concurrently(sources) { provider in try await provider.libraries() }
+        guard generation == librarySectionsGeneration else { return }
+
+        var sections: [MenuSection] = []
+        var mapping: [MenuSection.ID: [(providerID: String, library: MediaLibrary)]] = [:]
+        var failures: [String] = []
+        for (provider, result) in zip(sources, results) {
+            switch result {
+            case .success(let libraries):
+                for library in libraries {
+                    let section = MenuSection.library(named: library.name, type: library.type)
+                    if mapping[section.id] == nil { sections.append(section) }
+                    mapping[section.id, default: []].append((provider.id, library))
+                }
+            case .failure(let error):
+                failures.append("\(provider.source.rawValue): \(error.localizedDescription)")
             }
-            return UserDefaults.standard.bool(forKey: key)
+        }
+        sectionLibraries = mapping
+        librarySections = sections
+        librarySectionsError = sections.isEmpty && !failures.isEmpty ? failures.joined(separator: " • ") : nil
+        librarySectionsTask = nil
+
+        // Refill what was open before the sections were (re)loaded.
+        if isSearchActive {
+            for section in enabledSections { Task { await load(section) } }
+        } else if let expandedSection {
+            Task { await load(expandedSection) }
+        }
+    }
+
+    /// Runs `work` for every input at once and returns the results in input
+    /// order. Tasks stay on the main actor; their network waits overlap.
+    private func concurrently<Input, Output: Sendable>(
+        _ inputs: [Input],
+        _ work: @escaping @MainActor (Input) async throws -> Output
+    ) async -> [Result<Output, Error>] {
+        await withTaskGroup(of: (Int, Result<Output, Error>).self) { group in
+            for (index, input) in inputs.enumerated() {
+                group.addTask { @MainActor in
+                    do { return (index, .success(try await work(input))) } catch { return (index, .failure(error)) }
+                }
+            }
+            var results = [Result<Output, Error>](repeating: .failure(CancellationError()), count: inputs.count)
+            for await (index, result) in group { results[index] = result }
+            return results
         }
     }
 
     private var providers: [any MediaProvider] {
         if isOfflineMode {
-            let local = LocalMediaProvider(tvTopLevel: tvTopLevel, musicTopLevel: musicTopLevel)
+            let local = LocalMediaProvider(tvTopLevel: tvTopLevel, musicTopLevel: musicTopLevel, includeDownloads: true)
             return local.hasContent ? [local] : []
         }
         var result: [any MediaProvider] = []
@@ -335,24 +404,36 @@ final class AppState {
         errorsBySection[section] = nil
         defer { loadingSections.remove(section) }
 
+        // Query every source at once; results come back in source order so
+        // the merged list is stable.
+        let sources: [(provider: any MediaProvider, library: MediaLibrary?)]
+        if section.mediaType != nil {
+            await ensureLibrarySections()
+            let available = providers
+            sources = (sectionLibraries[section.id] ?? []).compactMap { entry in
+                available.first { $0.id == entry.providerID }.map { ($0, entry.library) }
+            }
+        } else {
+            sources = providers.map { ($0, nil) }
+        }
+        let results = await concurrently(sources) { source in
+            if let library = source.library {
+                return try await source.provider.items(inLibrary: library)
+            }
+            return try await source.provider.playlists()
+        }
+
         var serverItems: [MediaItem] = []
         var localItems: [MediaItem] = []
         var failures: [String] = []
-        for provider in providers {
-            do {
-                var providerItems: [MediaItem] = []
-                if let mediaType = section.mediaType {
-                    providerItems = try await provider.items(for: mediaType)
-                } else if section == .playlists {
-                    providerItems = try await provider.playlists()
-                }
-                if provider.source == .local {
-                    localItems = providerItems
-                } else {
-                    serverItems += providerItems
-                }
-            } catch {
-                failures.append("\(provider.source.rawValue): \(error.localizedDescription)")
+        for (source, result) in zip(sources, results) {
+            switch result {
+            case .success(let sourceItems) where source.provider.source == .local:
+                localItems += sourceItems
+            case .success(let sourceItems):
+                serverItems += sourceItems
+            case .failure(let error):
+                failures.append("\(source.provider.source.rawValue): \(error.localizedDescription)")
             }
         }
         // De-dupe: local items only appear when no server item with the same
@@ -364,6 +445,9 @@ final class AppState {
         itemsBySection[section] = items
         // Only surface errors when nothing loaded; partial results win.
         errorsBySection[section] = items.isEmpty && !failures.isEmpty ? failures.joined(separator: " • ") : nil
+        // Deep-search matches are placed by the section items they belong
+        // to, so redo the search once this section's items are known.
+        if isSearchActive, !trimmedQuery.isEmpty { scheduleDeepSearch() }
     }
 
     /// Bumped whenever the connected Plex servers (or their tokens) change,
@@ -378,6 +462,13 @@ final class AppState {
 
     /// Clears cached catalogs, e.g. after backend settings change.
     func resetCatalog() {
+        cachedSources = nil
+        librarySectionsGeneration += 1
+        librarySectionsTask = nil
+        librarySections = nil
+        librarySectionsError = nil
+        sectionLibraries = [:]
+        Task { await ensureLibrarySections() }
         itemsBySection = [:]
         errorsBySection = [:]
         drillPath = [:]
@@ -433,14 +524,20 @@ final class AppState {
 
             var newItems: [MenuSection: [MediaItem]] = [:]
             var newChildren: [String: [MediaItem]] = [:]
-            for section in enabledSections {
-                guard let mediaType = section.mediaType else { continue }
+            let sections = enabledSections.filter { $0.mediaType != nil }
+            // Search once per media type, then place each match in the
+            // library section whose items contain its top-level ancestor.
+            for mediaType in MediaType.allCases where sections.contains(where: { $0.mediaType == mediaType }) {
+                let candidates = sections.filter { $0.mediaType == mediaType }.map { section in
+                    (section, Set(itemsBySection[section]?.map(\.id) ?? []))
+                }
                 var chains: [[MediaItem]] = []
                 for provider in providers {
                     chains += (try? await provider.deepSearch(query, type: mediaType)) ?? []
                 }
                 for chain in chains {
-                    guard let top = chain.first else { continue }
+                    guard let top = chain.first,
+                          let section = candidates.first(where: { $0.1.contains(top.id) })?.0 else { continue }
                     if !(newItems[section] ?? []).contains(where: { $0.id == top.id }) {
                         newItems[section, default: []].append(top)
                     }
@@ -481,37 +578,20 @@ final class AppState {
     }
 
     private func sortedItems(_ items: [MediaItem], for section: MenuSection) -> [MediaItem] {
-        let comparator: (MediaItem, MediaItem) -> Bool
-        let direction: SortDirection
-        let applyLocalFirst: Bool
-        switch section {
-        case .movies:
-            direction = movieSortDirection
-            comparator = movieSortComparator(movieSort)
-            applyLocalFirst = movieLocalFirst
-        case .tvShows:
-            direction = tvSortDirection
-            comparator = tvSortComparator(tvSort)
-            applyLocalFirst = tvLocalFirst
-        case .music:
-            direction = musicSortDirection
-            comparator = musicSortComparator(musicSort)
-            applyLocalFirst = musicLocalFirst
-        default:
-            return items
+        let sortRaw: String, directionRaw: String, applyLocalFirst: Bool
+        switch section.mediaType {
+        case .movies: (sortRaw, directionRaw, applyLocalFirst) = (movieSortRaw, movieSortDirectionRaw, movieLocalFirst)
+        case .tvShows: (sortRaw, directionRaw, applyLocalFirst) = (tvSortRaw, tvSortDirectionRaw, tvLocalFirst)
+        case .music: (sortRaw, directionRaw, applyLocalFirst) = (musicSortRaw, musicSortDirectionRaw, musicLocalFirst)
+        case nil: return items
         }
+        let sort = LibrarySort(rawValue: sortRaw) ?? .byTitle
+        let descending = SortDirection(rawValue: directionRaw) == .descending
         var sorted = items.sorted { a, b in
-            direction == .ascending ? comparator(a, b) : comparator(b, a)
+            sort.areInOrder(a, b, descending: descending)
         }
         if applyLocalFirst {
-            let dm = DownloadManager.shared
-            let downloadedIDs: Set<String>
-            switch section {
-            case .movies: downloadedIDs = dm.downloadedMovieIDs
-            case .tvShows: downloadedIDs = dm.downloadedTVShowIDs
-            case .music: downloadedIDs = dm.downloadedMusicIDs
-            default: downloadedIDs = []
-            }
+            let downloadedIDs = section.mediaType.flatMap { DownloadManager.shared.downloadedIDs[$0] } ?? []
             if !downloadedIDs.isEmpty {
                 let locals = sorted.filter { downloadedIDs.contains($0.id) }
                 let remotes = sorted.filter { !downloadedIDs.contains($0.id) }
@@ -519,47 +599,6 @@ final class AppState {
             }
         }
         return sorted
-    }
-
-    private func movieSortComparator(_ sort: MovieSort) -> (MediaItem, MediaItem) -> Bool {
-        switch sort {
-        case .byTitle:
-            return { $0.title.localizedCompare($1.title) == .orderedAscending }
-        case .byYear:
-            return { ($0.sortableYear ?? Int.max) < ($1.sortableYear ?? Int.max) }
-        case .byDateAdded:
-            return { ($0.addedAt ?? .distantFuture) < ($1.addedAt ?? .distantFuture) }
-        case .byPlays:
-            return { ($0.playCount ?? 0) < ($1.playCount ?? 0) }
-        }
-    }
-
-    private func tvSortComparator(_ sort: TVSort) -> (MediaItem, MediaItem) -> Bool {
-        switch sort {
-        case .byTitle:
-            return { $0.title.localizedCompare($1.title) == .orderedAscending }
-        case .byYear:
-            return { ($0.sortableYear ?? Int.max) < ($1.sortableYear ?? Int.max) }
-        case .byDateAdded:
-            return { ($0.addedAt ?? .distantFuture) < ($1.addedAt ?? .distantFuture) }
-        case .byPlays:
-            return { ($0.playCount ?? 0) < ($1.playCount ?? 0) }
-        }
-    }
-
-    private func musicSortComparator(_ sort: MusicSort) -> (MediaItem, MediaItem) -> Bool {
-        switch sort {
-        case .byArtist:
-            return { ($0.subtitle ?? $0.title).localizedCompare($1.subtitle ?? $1.title) == .orderedAscending }
-        case .byTitle:
-            return { $0.title.localizedCompare($1.title) == .orderedAscending }
-        case .byYear:
-            return { ($0.sortableYear ?? Int.max) < ($1.sortableYear ?? Int.max) }
-        case .byDateAdded:
-            return { ($0.addedAt ?? .distantFuture) < ($1.addedAt ?? .distantFuture) }
-        case .byPlays:
-            return { ($0.playCount ?? 0) < ($1.playCount ?? 0) }
-        }
     }
 
     /// Children shown in a drill level: the search-filtered subset while a
@@ -867,13 +906,7 @@ final class AppState {
     /// TMDb for items that don't have it yet. Idempotent: items that already
     /// have a posterURL are not re-scraped.
     func refreshLocalLibrary() async {
-        #if os(macOS)
-        let defaults = UserDefaults.standard
-
-        let tmdbKey: String? = {
-            let v = defaults.string(forKey: SettingsKeys.tmdbAPIKey) ?? ""
-            return v.isEmpty ? nil : v
-        }()
+        let tmdbKey = KeychainStore.stringMigratingFromDefaults(for: KeychainKeys.tmdbAPIKey)
 
         let tmdb = tmdbKey.map { TMDbClient(apiKey: $0) }
         let lastfm = LastFMClient()
@@ -941,7 +974,6 @@ final class AppState {
         }
 
         resetCatalog()
-        #endif
     }
 
     // MARK: - Playback service (shared audio engine for inline and popout modes)

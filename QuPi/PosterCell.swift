@@ -1,4 +1,3 @@
-#if os(macOS)
 import SwiftUI
 
 /// One cell in the carousel: artwork with title and subtitle, or a compact
@@ -14,11 +13,9 @@ struct PosterCell: View {
     @AppStorage(SettingsKeys.simpleVisuals) private var simpleVisuals = false
     @AppStorage(SettingsKeys.downloadsEnabled) private var downloadsEnabled = false
     @AppStorage(SettingsKeys.richMedia) private var richMedia = false
-    @AppStorage("transcodeMode") private var transcodeModeRaw = "Automatic"
     
     @State private var isHovering = false
     @State private var showingInfo = false
-    @State private var showManualTranscodeButton = false
 
     private var cellWidth: CGFloat {
         isCompact ? MediaCarouselView.compactCellWidth : MediaCarouselView.baseCellWidth
@@ -66,65 +63,19 @@ struct PosterCell: View {
         .animation(.snappy(duration: 0.15), value: isHovering)
         .onHover { isHovering = $0 }
         .help(item.title)
-        .onAppear { checkEligibility() }
-        .onChange(of: transcodeModeRaw) { _, _ in checkEligibility() }
-        .onChange(of: DownloadManager.shared.isDownloaded(item)) { _, _ in checkEligibility() }
-        /*
-        .onChange(of: DownloadManager.shared.transcodeQueue.contains(where: { $0.id == item.id })) { _, isConverting in
-            if !isConverting { checkEligibility() }
-        }
-        
-        .popover(isPresented: Binding(
-            get: { DownloadManager.shared.pendingPrompts[item.id] != nil },
-            set: { isVisible in
-                if !isVisible && DownloadManager.shared.pendingPrompts[item.id] != nil {
-                    DownloadManager.shared.resolvePrompt(for: item.id, convert: false, preset: nil)
-                }
-            }
-        ), arrowEdge: .trailing) {
-            TranscodePromptView(item: item)
-        }*/
-    }
-    
-    private func checkEligibility() {
-        Task {
-            let eligible = DownloadManager.shared.isEligibleForPromptedTranscode(item)
-            // Tiny sleep delay to prevent CA Commit warnings in the console
-            try? await Task.sleep(nanoseconds: 10_000_000)
-            await MainActor.run {
-                showManualTranscodeButton = eligible
-            }
-        }
     }
 
     @ViewBuilder
     private var downloadButton: some View {
         if downloadsEnabled, DownloadManager.isLevelEnabled(for: item.kind) {
             Group {
-                if DownloadManager.shared.downloadingIDs.contains(item.id) || DownloadManager.shared.transcodeQueue.contains(where: { $0.id == item.id }) {
+                if DownloadManager.shared.downloadingIDs.contains(item.id) {
                     ProgressView()
                         .controlSize(.mini)
                 } else if DownloadManager.shared.isDownloaded(item) {
-                    HStack(spacing: isCompact ? 2 : 4) {
-                        
-                        /*if showManualTranscodeButton {
-                            Button {
-                                let presetRaw = UserDefaults.standard.string(forKey: SettingsKeys.transcodePreset(item.type)) ?? ""
-                                let preset = TranscodePreset(rawValue: presetRaw)
-                                let req = TranscodePromptRequest(item: item, preset: preset, continuation: nil)
-                                DownloadManager.shared.pendingPrompts[item.id] = req
-                            } label: {
-                                Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
-                                    .foregroundStyle(.white, .black.opacity(0.55))
-                            }
-                            .buttonStyle(.plain)
-                            .help("Convert")
-                        } */
-                        
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                            .help("Downloaded")
-                    }
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .help("Downloaded")
                 } else {
                     Button("Download for offline use", systemImage: "arrow.down.circle.fill") {
                         DownloadManager.shared.download(item, appState: appState)
@@ -186,7 +137,7 @@ struct PosterCell: View {
         .background(isHovering ? .tertiary : .quaternary,
                     in: RoundedRectangle(cornerRadius: 8))
         .overlay {
-            if let progress = DownloadManager.shared.activeProgress(for: item.id) {
+            if let progress = DownloadManager.shared.downloadProgress[item.id] {
                 Color.black.opacity(0.4)
                     .mask(alignment: .top) {
                         GeometryReader { geo in
@@ -213,11 +164,7 @@ struct PosterCell: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(.quaternary)
             if let url = item.posterURL {
-                AsyncImage(request: URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad)) { image in
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } placeholder: {
+                ArtworkImage(url: url) {
                     ProgressView()
                         .controlSize(.small)
                 }
@@ -230,7 +177,7 @@ struct PosterCell: View {
         .frame(width: cellWidth, height: cellHeight)
         .clipShape(.rect(cornerRadius: 8))
         .overlay {
-            if let progress = DownloadManager.shared.activeProgress(for: item.id) {
+            if let progress = DownloadManager.shared.downloadProgress[item.id] {
                 Color.black.opacity(0.65)
                     .mask(alignment: .top) {
                         GeometryReader { geo in
@@ -240,7 +187,7 @@ struct PosterCell: View {
                     }
                     .animation(.linear, value: progress)
                     .allowsHitTesting(false)
-                    .clipShape(RoundedRectangle(cornerRadius: 8)) // <-- FIXED: Added rounded corners to progress overlay
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
             }
 
             if isHovering {
@@ -258,63 +205,6 @@ struct PosterCell: View {
     }
 }
 
-
-/*
- 
-/// The popover view asking the user whether they want to convert the file
-struct TranscodePromptView: View {
-    let item: MediaItem
-    @State private var step: PromptStep = .ask
-    @State private var selectedPreset: TranscodePreset? = nil
-
-    enum PromptStep { case ask, choosePreset }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if step == .ask {
-                Text("Convert \(item.title)?")
-                    .font(.headline)
-                HStack {
-                    Button("Yes") {
-                        if let req = DownloadManager.shared.pendingPrompts[item.id] {
-                            selectedPreset = req.preset ?? TranscodePreset.allCases.first
-                        }
-                        withAnimation { step = .choosePreset }
-                    }
-                    .keyboardShortcut(.defaultAction)
-
-                    Button("No") {
-                        DownloadManager.shared.resolvePrompt(for: item.id, convert: false, preset: nil)
-                    }
-                }
-            } else {
-                Text("Convert \(item.title)")
-                    .font(.headline)
-                HStack {
-                    Picker("", selection: $selectedPreset) {
-                        ForEach(TranscodePreset.allCases) { p in
-                            Text(p.displayName).tag(p as TranscodePreset?)
-                        }
-                    }
-                    .labelsHidden()
-
-                    Button("OK") {
-                        DownloadManager.shared.resolvePrompt(for: item.id, convert: true, preset: selectedPreset)
-                    }
-                    .keyboardShortcut(.defaultAction)
-                }
-            }
-        }
-        .padding()
-        .frame(width: 260)
-        .onAppear {
-            if let req = DownloadManager.shared.pendingPrompts[item.id], let p = req.preset {
-                selectedPreset = p
-            }
-        }
-    }
-}
-*/
 
 /// A text view that automatically scrolls horizontally back and forth if its
 /// content is wider than its container.
@@ -362,4 +252,3 @@ struct MarqueeText: View {
         }
     }
 }
-#endif // os(macOS)

@@ -1,4 +1,3 @@
-#if os(macOS)
 import Foundation
 
 /// Serves locally downloaded media from the per-type folders configured in
@@ -9,22 +8,41 @@ import Foundation
 struct LocalMediaProvider: MediaProvider {
     var tvTopLevel: TVTopLevel = .series
     var musicTopLevel: MusicTopLevel = .album
+    /// Whether downloads are served here too. Only in Offline Mode: online,
+    /// downloaded items already show in their server's sections (with a
+    /// green tick), and here they couldn't be placed in the right library.
+    var includeDownloads = false
 
     var source: MediaSource { .local }
+    var id: String { "local" }
 
     // MARK: - MediaProvider
 
-    func items(for type: MediaType) async throws -> [MediaItem] {
-        let entries = DownloadManager.libraryIndexedEntries(for: type) + DownloadManager.indexedEntries(for: type)
+    /// One pseudo-library per media type with local content, named like
+    /// the menu's defaults ("Movies", "Shows", "Music"), so it merges with a
+    /// server library of the same name.
+    func libraries() async throws -> [MediaLibrary] {
+        types.map { MediaLibrary(id: $0.rawValue, name: $0.title, type: $0) }
+    }
+
+    func items(inLibrary library: MediaLibrary) async throws -> [MediaItem] {
+        let type = library.type
+        let entries = DownloadManager.libraryIndexedEntries(for: type)
+            + (includeDownloads ? DownloadManager.indexedEntries(for: type) : [])
         var indexedIDs = Set<String>()
+        var filenames: [String: String] = [:]
         let indexed = entries.compactMap { entry -> MediaItem? in
             guard entry.filename != nil || entry.item.kind.isExpandable else { return nil }
             if !indexedIDs.insert(entry.item.id).inserted { return nil }
-            return localised(entry.item, filename: entry.filename)
+            filenames[entry.item.id] = entry.filename
+            return entry.item
         }
         let dropped = unindexedItems(for: type, excluding: indexedIDs)
+        // Pick the top level first so artwork is only looked up (several
+        // file checks each) for the items shown, not every episode/track.
         let top = topLevel(of: indexed + dropped, type: type)
-        
+            .map { localised($0, filename: filenames[$0.id]) }
+
         // Enrich items with extracted offline metadata before returning
         return enrich(items: top, allEntries: entries)
     }
@@ -61,10 +79,18 @@ struct LocalMediaProvider: MediaProvider {
 
     // MARK: - Content check
 
-    /// True when at least one library folder has media files, used by
-    /// AppState to decide whether to register this provider.
-    var hasContent: Bool {
-        MediaType.allCases.contains { DownloadManager.mediaCounts(for: $0).leaves > 0 }
+    /// True when there is a folder to serve, used by AppState to decide
+    /// whether to register this provider.
+    var hasContent: Bool { !types.isEmpty }
+
+    /// Media types with a library folder set (or a download folder, when
+    /// serving downloads). Deliberately a settings lookup, not a scan:
+    /// AppState.providers runs on every catalog access.
+    private var types: [MediaType] {
+        MediaType.allCases.filter { type in
+            DownloadManager.libraryFolderPath(for: type) != nil
+                || (includeDownloads && DownloadManager.folderPath(for: type) != nil)
+        }
     }
 
     // MARK: - Enrichment (Offline Metadata Recovery)
@@ -107,22 +133,6 @@ struct LocalMediaProvider: MediaProvider {
 
     // MARK: - Helpers
 
-    private func localArtworkURL(in folder: URL, stem: String?) -> URL? {
-        let candidates: [String]
-        if let stem {
-            candidates = ["\(stem).jpg", "\(stem).png", "\(stem).jpeg"]
-        } else {
-            candidates = ["poster.jpg", "poster.png", "poster.jpeg"]
-        }
-        for candidate in candidates {
-            let url = folder.appending(path: candidate)
-            if FileManager.default.fileExists(atPath: url.path) {
-                return url
-            }
-        }
-        return nil
-    }
-
     private func localArtworkURL(filename: String?, type: MediaType,
                                  kind: MediaKind? = nil, title: String? = nil,
                                  parentTitle: String? = nil) -> URL? {
@@ -132,33 +142,27 @@ struct LocalMediaProvider: MediaProvider {
                 let fileURL = folder.appending(path: filename)
                 let baseDir = fileURL.deletingLastPathComponent()
                 let stem = fileURL.deletingPathExtension().lastPathComponent
-                if let url = localArtworkURL(in: baseDir, stem: stem) { return url }
-                if let url = localArtworkURL(in: baseDir, stem: nil) { return url }
+                if let url = LocalLibraryScanner.artworkURL(in: baseDir, stem: stem) { return url }
+                if let url = LocalLibraryScanner.artworkURL(in: baseDir, stem: nil) { return url }
             } else if kind == .show, let title {
                 // Sibling naming: ShowTitle.jpg sits next to show folder, inside type root.
-                if let url = localArtworkURL(in: folder, stem: sanitize(title)) { return url }
+                if let url = LocalLibraryScanner.artworkURL(in: folder, stem: DownloadManager.sanitizePathComponent(title)) { return url }
                 // Fallback: poster.* inside the show folder.
-                if let url = localArtworkURL(in: folder.appending(path: sanitize(title)), stem: nil) { return url }
+                if let url = LocalLibraryScanner.artworkURL(in: folder.appending(path: DownloadManager.sanitizePathComponent(title)), stem: nil) { return url }
             } else if kind == .season, let title {
                 // Sibling naming: SeasonTitle.jpg sits next to season folder, inside show folder.
                 if let parent = parentTitle {
-                    let showDir = folder.appending(path: sanitize(parent))
-                    if let url = localArtworkURL(in: showDir, stem: sanitize(title)) { return url }
+                    let showDir = folder.appending(path: DownloadManager.sanitizePathComponent(parent))
+                    if let url = LocalLibraryScanner.artworkURL(in: showDir, stem: DownloadManager.sanitizePathComponent(title)) { return url }
                     // Fallback: poster.* inside the season folder.
-                    if let url = localArtworkURL(in: showDir.appending(path: sanitize(title)), stem: nil) { return url }
+                    if let url = LocalLibraryScanner.artworkURL(in: showDir.appending(path: DownloadManager.sanitizePathComponent(title)), stem: nil) { return url }
                 } else {
-                    if let url = localArtworkURL(in: folder, stem: sanitize(title)) { return url }
-                    if let url = localArtworkURL(in: folder.appending(path: sanitize(title)), stem: nil) { return url }
+                    if let url = LocalLibraryScanner.artworkURL(in: folder, stem: DownloadManager.sanitizePathComponent(title)) { return url }
+                    if let url = LocalLibraryScanner.artworkURL(in: folder.appending(path: DownloadManager.sanitizePathComponent(title)), stem: nil) { return url }
                 }
             }
         }
         return nil
-    }
-
-    private func sanitize(_ s: String) -> String {
-        var r = s.replacing("/", with: "-").replacing(":", with: "-")
-        while r.hasPrefix(".") { r = String(r.dropFirst()) }
-        return r.isEmpty ? "Unknown" : r
     }
 
     private func localised(_ item: MediaItem, filename: String?) -> MediaItem {
@@ -228,4 +232,3 @@ struct LocalMediaProvider: MediaProvider {
         }
     }
 }
-#endif // os(macOS)
