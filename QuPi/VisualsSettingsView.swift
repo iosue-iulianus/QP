@@ -72,10 +72,10 @@ struct VisualsSettingsView: View {
                 LabeledContent("Movies") {
                     HStack {
                         Picker("", selection: $appState.movieSortRaw) {
-                            Text("Title").tag(MovieSort.byTitle.rawValue)
-                            Text("Year").tag(MovieSort.byYear.rawValue)
-                            Text("Date Added").tag(MovieSort.byDateAdded.rawValue)
-                            Text("Plays").tag(MovieSort.byPlays.rawValue)
+                            Text("Title").tag(LibrarySort.byTitle.rawValue)
+                            Text("Year").tag(LibrarySort.byYear.rawValue)
+                            Text("Date Added").tag(LibrarySort.byDateAdded.rawValue)
+                            Text("Plays").tag(LibrarySort.byPlays.rawValue)
                         }
                         .labelsHidden()
                         .fixedSize()
@@ -96,10 +96,10 @@ struct VisualsSettingsView: View {
                 LabeledContent("TV Shows") {
                     HStack {
                         Picker("", selection: $appState.tvSortRaw) {
-                            Text("Title").tag(TVSort.byTitle.rawValue)
-                            Text("Year").tag(TVSort.byYear.rawValue)
-                            Text("Date Added").tag(TVSort.byDateAdded.rawValue)
-                            Text("Plays").tag(TVSort.byPlays.rawValue)
+                            Text("Title").tag(LibrarySort.byTitle.rawValue)
+                            Text("Year").tag(LibrarySort.byYear.rawValue)
+                            Text("Date Added").tag(LibrarySort.byDateAdded.rawValue)
+                            Text("Plays").tag(LibrarySort.byPlays.rawValue)
                         }
                         .labelsHidden()
                         .fixedSize()
@@ -120,11 +120,11 @@ struct VisualsSettingsView: View {
                 LabeledContent("Music") {
                     HStack {
                         Picker("", selection: $appState.musicSortRaw) {
-                            Text("Artist").tag(MusicSort.byArtist.rawValue)
-                            Text("Title").tag(MusicSort.byTitle.rawValue)
-                            Text("Year").tag(MusicSort.byYear.rawValue)
-                            Text("Date Added").tag(MusicSort.byDateAdded.rawValue)
-                            Text("Plays").tag(MusicSort.byPlays.rawValue)
+                            Text("Artist").tag(LibrarySort.byArtist.rawValue)
+                            Text("Title").tag(LibrarySort.byTitle.rawValue)
+                            Text("Year").tag(LibrarySort.byYear.rawValue)
+                            Text("Date Added").tag(LibrarySort.byDateAdded.rawValue)
+                            Text("Plays").tag(LibrarySort.byPlays.rawValue)
                         }
                         .labelsHidden()
                         .fixedSize()

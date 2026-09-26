@@ -36,42 +36,30 @@ final class AppState {
 
     private func setupMediaKeys() {
         let center = MPRemoteCommandCenter.shared()
-        center.playCommand.addTarget { [weak self] _ in
-            guard let self = self, UserDefaults.standard.bool(forKey: SettingsKeys.useMediaKeys) else { return .commandFailed }
-            Task { @MainActor in self.togglePlayPause() }
+        for command in [center.playCommand, center.pauseCommand, center.togglePlayPauseCommand] {
+            handleMediaKey(command) { $0.togglePlayPause() }
+        }
+        handleMediaKey(center.nextTrackCommand) { $0.skipFromMediaKey(1) }
+        handleMediaKey(center.previousTrackCommand) { $0.skipFromMediaKey(-1) }
+    }
+
+    /// Routes a media key to `action` while "Use Media Keys" is enabled.
+    private func handleMediaKey(_ command: MPRemoteCommand, _ action: @escaping @MainActor @Sendable (AppState) -> Void) {
+        command.addTarget { [weak self] _ in
+            guard let self, UserDefaults.standard.bool(forKey: SettingsKeys.useMediaKeys) else { return .commandFailed }
+            Task { @MainActor in action(self) }
             return .success
         }
-        center.pauseCommand.addTarget { [weak self] _ in
-            guard let self = self, UserDefaults.standard.bool(forKey: SettingsKeys.useMediaKeys) else { return .commandFailed }
-            Task { @MainActor in self.togglePlayPause() }
-            return .success
-        }
-        center.togglePlayPauseCommand.addTarget { [weak self] _ in
-            guard let self = self, UserDefaults.standard.bool(forKey: SettingsKeys.useMediaKeys) else { return .commandFailed }
-            Task { @MainActor in self.togglePlayPause() }
-            return .success
-        }
-        center.nextTrackCommand.addTarget { [weak self] _ in
-            guard let self = self, UserDefaults.standard.bool(forKey: SettingsKeys.useMediaKeys) else { return .commandFailed }
-            Task { @MainActor in
-                if self.inlinePlaylist != nil {
-                    self.playInlineNeighbor(1)
-                } else {
-                    NotificationCenter.default.post(name: NSNotification.Name("QP.MediaKeyNext"), object: nil)
-                }
-            }
-            return .success
-        }
-        center.previousTrackCommand.addTarget { [weak self] _ in
-            guard let self = self, UserDefaults.standard.bool(forKey: SettingsKeys.useMediaKeys) else { return .commandFailed }
-            Task { @MainActor in
-                if self.inlinePlaylist != nil {
-                    self.playInlineNeighbor(-1)
-                } else {
-                    NotificationCenter.default.post(name: NSNotification.Name("QP.MediaKeyPrevious"), object: nil)
-                }
-            }
-            return .success
+    }
+
+    /// Next/previous track: steps through the inline playlist, or asks the
+    /// open player window to handle it.
+    private func skipFromMediaKey(_ offset: Int) {
+        if inlinePlaylist != nil {
+            playInlineNeighbor(offset)
+        } else {
+            let name = offset > 0 ? "QP.MediaKeyNext" : "QP.MediaKeyPrevious"
+            NotificationCenter.default.post(name: NSNotification.Name(name), object: nil)
         }
     }
 
@@ -160,19 +148,19 @@ final class AppState {
 
     // Sort preferences are stored (not UserDefaults-computed) so @Observable
     // can track changes and re-render displayedItems reactively without a catalog reload.
-    var movieSortRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.movieSort) ?? MovieSort.byTitle.rawValue {
+    var movieSortRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.movieSort) ?? LibrarySort.byTitle.rawValue {
         didSet { UserDefaults.standard.set(movieSortRaw, forKey: SettingsKeys.movieSort) }
     }
     var movieSortDirectionRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.movieSortDirection) ?? SortDirection.ascending.rawValue {
         didSet { UserDefaults.standard.set(movieSortDirectionRaw, forKey: SettingsKeys.movieSortDirection) }
     }
-    var tvSortRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.tvSort) ?? TVSort.byTitle.rawValue {
+    var tvSortRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.tvSort) ?? LibrarySort.byTitle.rawValue {
         didSet { UserDefaults.standard.set(tvSortRaw, forKey: SettingsKeys.tvSort) }
     }
     var tvSortDirectionRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.tvSortDirection) ?? SortDirection.ascending.rawValue {
         didSet { UserDefaults.standard.set(tvSortDirectionRaw, forKey: SettingsKeys.tvSortDirection) }
     }
-    var musicSortRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.musicSort) ?? MusicSort.byTitle.rawValue {
+    var musicSortRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.musicSort) ?? LibrarySort.byTitle.rawValue {
         didSet { UserDefaults.standard.set(musicSortRaw, forKey: SettingsKeys.musicSort) }
     }
     var musicSortDirectionRaw: String = UserDefaults.standard.string(forKey: SettingsKeys.musicSortDirection) ?? SortDirection.ascending.rawValue {
@@ -199,13 +187,6 @@ final class AppState {
             }
         }
     }
-
-    private var movieSort: MovieSort { MovieSort(rawValue: movieSortRaw) ?? .byTitle }
-    private var movieSortDirection: SortDirection { SortDirection(rawValue: movieSortDirectionRaw) ?? .ascending }
-    private var tvSort: TVSort { TVSort(rawValue: tvSortRaw) ?? .byTitle }
-    private var tvSortDirection: SortDirection { SortDirection(rawValue: tvSortDirectionRaw) ?? .ascending }
-    private var musicSort: MusicSort { MusicSort(rawValue: musicSortRaw) ?? .byTitle }
-    private var musicSortDirection: SortDirection { SortDirection(rawValue: musicSortDirectionRaw) ?? .ascending }
 
     /// The sections shown in the dropdown, per the Preferences toggles.
     var enabledSections: [MenuSection] {
@@ -477,27 +458,17 @@ final class AppState {
     }
 
     private func sortedItems(_ items: [MediaItem], for section: MenuSection) -> [MediaItem] {
-        let comparator: (MediaItem, MediaItem) -> Bool
-        let direction: SortDirection
-        let applyLocalFirst: Bool
+        let sortRaw: String, directionRaw: String, applyLocalFirst: Bool
         switch section {
-        case .movies:
-            direction = movieSortDirection
-            comparator = movieSortComparator(movieSort)
-            applyLocalFirst = movieLocalFirst
-        case .tvShows:
-            direction = tvSortDirection
-            comparator = tvSortComparator(tvSort)
-            applyLocalFirst = tvLocalFirst
-        case .music:
-            direction = musicSortDirection
-            comparator = musicSortComparator(musicSort)
-            applyLocalFirst = musicLocalFirst
-        default:
-            return items
+        case .movies: (sortRaw, directionRaw, applyLocalFirst) = (movieSortRaw, movieSortDirectionRaw, movieLocalFirst)
+        case .tvShows: (sortRaw, directionRaw, applyLocalFirst) = (tvSortRaw, tvSortDirectionRaw, tvLocalFirst)
+        case .music: (sortRaw, directionRaw, applyLocalFirst) = (musicSortRaw, musicSortDirectionRaw, musicLocalFirst)
+        default: return items
         }
+        let sort = LibrarySort(rawValue: sortRaw) ?? .byTitle
+        let descending = SortDirection(rawValue: directionRaw) == .descending
         var sorted = items.sorted { a, b in
-            direction == .ascending ? comparator(a, b) : comparator(b, a)
+            descending ? sort.ascending(b, a) : sort.ascending(a, b)
         }
         if applyLocalFirst {
             let downloadedIDs = section.mediaType.flatMap { DownloadManager.shared.downloadedIDs[$0] } ?? []
@@ -508,47 +479,6 @@ final class AppState {
             }
         }
         return sorted
-    }
-
-    private func movieSortComparator(_ sort: MovieSort) -> (MediaItem, MediaItem) -> Bool {
-        switch sort {
-        case .byTitle:
-            return { $0.title.localizedCompare($1.title) == .orderedAscending }
-        case .byYear:
-            return { ($0.sortableYear ?? Int.max) < ($1.sortableYear ?? Int.max) }
-        case .byDateAdded:
-            return { ($0.addedAt ?? .distantFuture) < ($1.addedAt ?? .distantFuture) }
-        case .byPlays:
-            return { ($0.playCount ?? 0) < ($1.playCount ?? 0) }
-        }
-    }
-
-    private func tvSortComparator(_ sort: TVSort) -> (MediaItem, MediaItem) -> Bool {
-        switch sort {
-        case .byTitle:
-            return { $0.title.localizedCompare($1.title) == .orderedAscending }
-        case .byYear:
-            return { ($0.sortableYear ?? Int.max) < ($1.sortableYear ?? Int.max) }
-        case .byDateAdded:
-            return { ($0.addedAt ?? .distantFuture) < ($1.addedAt ?? .distantFuture) }
-        case .byPlays:
-            return { ($0.playCount ?? 0) < ($1.playCount ?? 0) }
-        }
-    }
-
-    private func musicSortComparator(_ sort: MusicSort) -> (MediaItem, MediaItem) -> Bool {
-        switch sort {
-        case .byArtist:
-            return { ($0.subtitle ?? $0.title).localizedCompare($1.subtitle ?? $1.title) == .orderedAscending }
-        case .byTitle:
-            return { $0.title.localizedCompare($1.title) == .orderedAscending }
-        case .byYear:
-            return { ($0.sortableYear ?? Int.max) < ($1.sortableYear ?? Int.max) }
-        case .byDateAdded:
-            return { ($0.addedAt ?? .distantFuture) < ($1.addedAt ?? .distantFuture) }
-        case .byPlays:
-            return { ($0.playCount ?? 0) < ($1.playCount ?? 0) }
-        }
     }
 
     /// Children shown in a drill level: the search-filtered subset while a

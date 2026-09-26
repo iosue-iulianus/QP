@@ -250,29 +250,25 @@ enum PlayerMode: String, CaseIterable {
     }
 }
 
-/// Sort order for the Movies section.
-enum MovieSort: String, CaseIterable {
-    case byTitle
-    case byYear
-    case byDateAdded
-    case byPlays
-}
-
-/// Sort order for the TV Shows section.
-enum TVSort: String, CaseIterable {
-    case byTitle
-    case byYear
-    case byDateAdded
-    case byPlays
-}
-
-/// Sort order for the Music section.
-enum MusicSort: String, CaseIterable {
+/// Sort order for a library section. Movies and TV offer every case except
+/// `byArtist`, which only the Music section shows.
+enum LibrarySort: String, CaseIterable {
     case byArtist
     case byTitle
     case byYear
     case byDateAdded
     case byPlays
+
+    /// True when `a` comes before `b` in ascending order.
+    func ascending(_ a: MediaItem, _ b: MediaItem) -> Bool {
+        switch self {
+        case .byArtist: (a.subtitle ?? a.title).localizedCompare(b.subtitle ?? b.title) == .orderedAscending
+        case .byTitle: a.title.localizedCompare(b.title) == .orderedAscending
+        case .byYear: (a.sortableYear ?? Int.max) < (b.sortableYear ?? Int.max)
+        case .byDateAdded: (a.addedAt ?? .distantFuture) < (b.addedAt ?? .distantFuture)
+        case .byPlays: (a.playCount ?? 0) < (b.playCount ?? 0)
+        }
+    }
 }
 
 /// Ascending or descending order for section sorting.
