@@ -74,9 +74,27 @@ final class AppState {
 
     // MARK: - Backend configuration
 
+    /// Server settings from UserDefaults and the Keychain. Cached because
+    /// Keychain reads are slow and these are needed on every catalog access
+    /// and menu redraw. Cleared by resetCatalog(), which every account
+    /// change calls. Keeping the PlexConfiguration objects also keeps a
+    /// working fallback URL for the rest of the session.
+    @ObservationIgnored private var cachedSources: (plex: [PlexConfiguration], jellyfin: JellyfinConfiguration?)?
+
+    private var sources: (plex: [PlexConfiguration], jellyfin: JellyfinConfiguration?) {
+        if let cachedSources { return cachedSources }
+        let loaded = (plex: Self.loadPlexConfigurations(), jellyfin: Self.loadJellyfinConfiguration())
+        cachedSources = loaded
+        return loaded
+    }
+
     /// One configuration per connected server that has a usable URL and
     /// token; their catalogs are merged.
-    var plexConfigurations: [PlexConfiguration] {
+    var plexConfigurations: [PlexConfiguration] { sources.plex }
+
+    var jellyfinConfiguration: JellyfinConfiguration? { sources.jellyfin }
+
+    private static func loadPlexConfigurations() -> [PlexConfiguration] {
         PlexServerStore.load().compactMap { server in
             guard let url = URL(string: server.urlString),
                   let token = PlexServerStore.token(for: server.id), !token.isEmpty else {
@@ -92,7 +110,7 @@ final class AppState {
         }
     }
 
-    var jellyfinConfiguration: JellyfinConfiguration? {
+    private static func loadJellyfinConfiguration() -> JellyfinConfiguration? {
         let defaults = UserDefaults.standard
         guard let urlString = defaults.string(forKey: SettingsKeys.jellyfinServerURL),
               !urlString.isEmpty,
@@ -355,6 +373,7 @@ final class AppState {
 
     /// Clears cached catalogs, e.g. after backend settings change.
     func resetCatalog() {
+        cachedSources = nil
         itemsBySection = [:]
         errorsBySection = [:]
         drillPath = [:]
