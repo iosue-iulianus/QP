@@ -75,12 +75,22 @@ struct MenuBarContentView: View {
                 Divider()
             }
 
+            // Filtered and sorted once per redraw, shared by the search filter,
+            // the count and the carousel.
             let sections = appState.enabledSections
-            ForEach(sections) { section in
-                self.section(for: section)
-                if section != sections.last {
+            let itemsBySection = Dictionary(uniqueKeysWithValues: sections.map { ($0, visibleItems(for: $0)) })
+            // While a query is typed, show only the sections with matches.
+            let shown = appState.isFiltering
+                ? sections.filter { !(itemsBySection[$0]??.isEmpty ?? true) }
+                : sections
+            ForEach(shown) { section in
+                self.section(for: section, items: itemsBySection[section] ?? nil)
+                if section != shown.last {
                     Divider()
                 }
+            }
+            if appState.isFiltering {
+                searchStatus(hasResults: !shown.isEmpty)
             }
         }
         .frame(width: contentWidth)
@@ -180,13 +190,35 @@ struct MenuBarContentView: View {
     // MARK: - Sections
 
     private func isExpanded(_ section: MenuSection) -> Bool {
-        appState.isSearchActive || appState.expandedSection == section
+        appState.isFiltering || appState.expandedSection == section
+    }
+
+    /// One row under the search results: a spinner while results may still
+    /// arrive, otherwise a single "no matches" note when nothing matched.
+    @ViewBuilder
+    private func searchStatus(hasResults: Bool) -> some View {
+        if appState.isSearchPending {
+            if hasResults { Divider() }
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Searching…")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+        } else if !hasResults {
+            Text("No matches for \"\(appState.searchText)\"")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+        }
     }
 
     @ViewBuilder
-    private func section(for section: MenuSection) -> some View {
-        // Filtered and sorted once per redraw, shared by the count and the carousel.
-        let items = visibleItems(for: section)
+    private func section(for section: MenuSection, items: [MediaItem]?) -> some View {
         // The sort menu sits between the title and the count, so the row is
         // two buttons around it rather than one button containing a menu.
         HStack(spacing: 6) {
@@ -232,8 +264,8 @@ struct MenuBarContentView: View {
     }
 
     private func toggleRow(_ section: MenuSection) {
-        // Rows are static headers while a search is active.
-        guard !appState.isSearchActive else { return }
+        // Rows are static headers while search results are shown.
+        guard !appState.isFiltering else { return }
         withAnimation(.snappy(duration: 0.2)) {
             appState.toggleExpansion(of: section)
         }
@@ -315,12 +347,6 @@ struct MenuBarContentView: View {
             ForEach(appState.drillPath[section] ?? [], id: \.id) { parent in
                 drillLevel(for: parent, in: section)
             }
-        } else if appState.isSearchActive && !appState.searchText.isEmpty {
-            Text("No matches for \"\(appState.searchText)\"")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
         } else {
             Text(section == .continueItems
                  ? (appState.isOfflineMode ? "No downloaded items in progress." : "Nothing in progress — items you stop partway through appear here.")

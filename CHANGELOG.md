@@ -13,6 +13,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Search shows only the sections with matches. Clicking the search field no longer expands every section (catalogs still load in the background, so results appear as soon as you type), and instead of a "No matches" row per library there is one "Searching…" row while results may still arrive, or a single "No matches" note.
 - Plex connects in seconds away from home. All known addresses of a server are checked at once (Plex's token-free `/identity` endpoint, 3 s limit) on first use, after a network change (Wi-Fi, hotspot, VPN) and when the current address stops answering, and the fastest one is used and saved. Before, each unreachable LAN address had to time out (about 60 s each) first.
 - Search ignores spaces, punctuation, case and accents in titles, so "madmen" finds "Mad Men" and "amelie" finds "Amélie".
 

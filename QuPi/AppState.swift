@@ -609,8 +609,25 @@ final class AppState {
         searchText.trimmingCharacters(in: .whitespaces)
     }
 
-    /// Expands all sections and loads every catalog so typing filters across
-    /// everything at once.
+    /// True while a query is typed: the menu then shows only the sections
+    /// with matches, all expanded.
+    var isFiltering: Bool {
+        isSearchActive && !trimmedQuery.isEmpty
+    }
+
+    /// True while the server-side deep search for the current query runs.
+    private(set) var isDeepSearching = false
+
+    /// Whether search results may still arrive: a section's catalog is
+    /// loading (or hasn't loaded) or the deep search is running.
+    var isSearchPending: Bool {
+        isDeepSearching || librarySections == nil || enabledSections.contains { section in
+            loadingSections.contains(section) || itemsBySection[section] == nil
+        }
+    }
+
+    /// Loads every catalog in the background so typing filters across
+    /// everything at once. Sections expand only once there's a query.
     func activateSearch() {
         guard !isSearchActive else { return }
         isSearchActive = true
@@ -622,6 +639,7 @@ final class AppState {
     func deactivateSearch() {
         isSearchActive = false
         searchText = ""
+        isDeepSearching = false
         deepSearchTask?.cancel()
         deepSearchItems = [:]
         deepSearchChildren = [:]
@@ -636,8 +654,10 @@ final class AppState {
         guard !query.isEmpty else {
             deepSearchItems = [:]
             deepSearchChildren = [:]
+            isDeepSearching = false
             return
         }
+        isDeepSearching = true
         deepSearchTask = Task {
             try? await Task.sleep(for: .milliseconds(350))
             guard !Task.isCancelled else { return }
@@ -671,6 +691,7 @@ final class AppState {
             guard !Task.isCancelled, trimmedQuery == query else { return }
             deepSearchItems = newItems
             deepSearchChildren = newChildren
+            isDeepSearching = false
         }
     }
 
