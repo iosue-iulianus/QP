@@ -122,7 +122,7 @@ struct MenuBarContentView: View {
                     .foregroundStyle(.secondary)
             }
             searchField
-            Button("Offline Mode", systemImage: "airplane") {
+            Button("Offline Mode", systemImage: appState.isOfflineMode ? "arrow.down.circle.fill" : "arrow.down.circle") {
                 appState.isOfflineMode.toggle()
             }
             .buttonStyle(.plain)

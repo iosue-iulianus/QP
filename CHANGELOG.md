@@ -16,6 +16,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The Settings window's height can be adjusted (the width stays fixed, like System Settings); each tab scrolls when it doesn't fit.
+- The Offline Mode button in the menu uses a download arrow (filled while Offline Mode is on) instead of an airplane.
 - Settings follow the macOS 26 System Settings style. Each option explains itself in a grey line underneath instead of behind ⓘ buttons in section headers, long option lists use menus, Playback, Visuals and Data are split into clearer sections, and buttons moved out of section headers into rows. General shows whether local network access is allowed. The menu's search field is a capsule.
 - Data: each media type has its own section (folder, storage limit, usage), and "Delete Downloads…" now asks for confirmation instead of deleting straight away. The "Download Indicators" switch, which only revealed the level checkboxes, is replaced by an always-visible "Show Download Button On" section.
 - Music auto-continue options are named for what they do: "By Genre" was actually shuffling songs by the same artist and is now "Shuffle by Artist", and "Off" is now "Finish Album".

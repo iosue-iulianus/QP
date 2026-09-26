@@ -36,5 +36,6 @@ import SwiftUI
             SettingsView()
                 .environment(appState)
         }
+        .defaultSize(width: 520, height: 640)
     }
 }

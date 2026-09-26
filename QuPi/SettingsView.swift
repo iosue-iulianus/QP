@@ -24,7 +24,26 @@ struct SettingsView: View {
                 .tabItem { Label("Data", systemImage: "externaldrive") }
                 .tag("data")
         }
-        .frame(width: 520, height: 560)
+        // Fixed width, adjustable height, like System Settings; each tab's
+        // Form scrolls when it doesn't fit.
+        .frame(width: 520)
+        .frame(minHeight: 400, idealHeight: 560, maxHeight: .infinity)
+        .background(ResizableSettingsWindow())
+    }
+}
+
+/// The Settings scene's window is fixed-size and ignores
+/// .windowResizability, so this reaches the hosting NSWindow and makes its
+/// height adjustable.
+private struct ResizableSettingsWindow: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { WindowHook() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class WindowHook: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            window?.styleMask.insert(.resizable)
+        }
     }
 }
 
