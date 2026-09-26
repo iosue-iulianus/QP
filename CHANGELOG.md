@@ -14,6 +14,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The menu shows one section per server library, named as on the server, instead of fixed Movies, TV Shows and Music sections. A Jellyfin "YouTube" library now gets its own section instead of being mixed into TV Shows. Libraries with the same name and type on different servers share a section, and local library folders join the section named "Movies", "Shows" or "Music". Choose which libraries appear in Settings > Libraries; the Movies/TV Shows/Music toggles in Settings > Visuals are gone.
+- Online, downloads appear only in their server's sections (with the green tick); on their own they show in Offline Mode.
+- "TV Shows" is called "Shows" throughout the app.
+- Search results are placed in the library they belong to, and no longer include matches from libraries you excluded in Settings > Libraries.
 - Movies and TV Shows are sorted by date added, newest first, by default. Items without a year or date added now sort last in either direction instead of jumping to the top.
 - The TMDb API key is stored in the Keychain instead of in plain text in the app's preferences. A key saved earlier is moved over automatically the first time it is read.
 - Minimum macOS version lowered from 27 to 26 (Tahoe).

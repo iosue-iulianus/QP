@@ -28,6 +28,7 @@ final class AppState {
         setupMediaKeys()
         
         Task {
+            await ensureLibrarySections()
             if providers.isEmpty {
                 UserDefaults.standard.set("accounts", forKey: "selectedSettingsTab")
                 NSApplication.shared.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
@@ -202,35 +203,100 @@ final class AppState {
         didSet { UserDefaults.standard.set(musicLocalFirst, forKey: SettingsKeys.musicLocalFirst) }
     }
 
-    /// Session-only flag — not persisted. Hides all remote providers when true.
+    /// Session-only flag, not persisted. Hides all remote providers when
+    /// true; resetCatalog() reloads the sections and whatever is open.
     var isOfflineMode: Bool = false {
-        didSet {
-            resetCatalog()
-            if isSearchActive {
-                for section in enabledSections { Task { await load(section, force: true) } }
-            } else if let section = expandedSection {
-                Task { await load(section, force: true) }
-            }
-        }
+        didSet { resetCatalog() }
     }
 
-    /// The sections shown in the dropdown, per the Preferences toggles.
+    /// The sections shown in the dropdown: one per library, then Playlists
+    /// and Continue… when enabled in Settings (both off by default).
     var enabledSections: [MenuSection] {
-        MenuSection.allCases.filter { section in
+        let fixed = [MenuSection.playlists, .continueItems].filter { section in
             if section == .continueItems && !isOfflineMode && plexConfigurations.isEmpty && jellyfinConfiguration == nil {
                 return false
             }
-            let key = SettingsKeys.sectionEnabled(section)
-            guard UserDefaults.standard.object(forKey: key) != nil else {
-                return section.enabledByDefault
+            return UserDefaults.standard.bool(forKey: SettingsKeys.sectionEnabled(section))
+        }
+        return (librarySections ?? []) + fixed
+    }
+
+    // MARK: - Library sections
+
+    /// One section per library name and type across all providers, in
+    /// provider order. Nil while loading.
+    private(set) var librarySections: [MenuSection]?
+    /// Shown instead of sections when no provider could list its libraries.
+    private(set) var librarySectionsError: String?
+    /// The provider libraries behind each library section.
+    @ObservationIgnored private var sectionLibraries: [MenuSection.ID: [(providerID: String, library: MediaLibrary)]] = [:]
+    @ObservationIgnored private var librarySectionsTask: Task<Void, Never>?
+    /// Bumped by resetCatalog() so a superseded load discards its results.
+    @ObservationIgnored private var librarySectionsGeneration = 0
+
+    /// Loads the library sections once; concurrent callers share the request.
+    func ensureLibrarySections() async {
+        if librarySections != nil { return }
+        let task = librarySectionsTask ?? Task { await loadLibrarySections() }
+        librarySectionsTask = task
+        await task.value
+    }
+
+    private func loadLibrarySections() async {
+        let generation = librarySectionsGeneration
+        let sources = providers
+        let results = await concurrently(sources) { provider in try await provider.libraries() }
+        guard generation == librarySectionsGeneration else { return }
+
+        var sections: [MenuSection] = []
+        var mapping: [MenuSection.ID: [(providerID: String, library: MediaLibrary)]] = [:]
+        var failures: [String] = []
+        for (provider, result) in zip(sources, results) {
+            switch result {
+            case .success(let libraries):
+                for library in libraries {
+                    let section = MenuSection.library(named: library.name, type: library.type)
+                    if mapping[section.id] == nil { sections.append(section) }
+                    mapping[section.id, default: []].append((provider.id, library))
+                }
+            case .failure(let error):
+                failures.append("\(provider.source.rawValue): \(error.localizedDescription)")
             }
-            return UserDefaults.standard.bool(forKey: key)
+        }
+        sectionLibraries = mapping
+        librarySections = sections
+        librarySectionsError = sections.isEmpty && !failures.isEmpty ? failures.joined(separator: " • ") : nil
+        librarySectionsTask = nil
+
+        // Refill what was open before the sections were (re)loaded.
+        if isSearchActive {
+            for section in enabledSections { Task { await load(section) } }
+        } else if let expandedSection {
+            Task { await load(expandedSection) }
+        }
+    }
+
+    /// Runs `work` for every input at once and returns the results in input
+    /// order. Tasks stay on the main actor; their network waits overlap.
+    private func concurrently<Input, Output: Sendable>(
+        _ inputs: [Input],
+        _ work: @escaping @MainActor (Input) async throws -> Output
+    ) async -> [Result<Output, Error>] {
+        await withTaskGroup(of: (Int, Result<Output, Error>).self) { group in
+            for (index, input) in inputs.enumerated() {
+                group.addTask { @MainActor in
+                    do { return (index, .success(try await work(input))) } catch { return (index, .failure(error)) }
+                }
+            }
+            var results = [Result<Output, Error>](repeating: .failure(CancellationError()), count: inputs.count)
+            for await (index, result) in group { results[index] = result }
+            return results
         }
     }
 
     private var providers: [any MediaProvider] {
         if isOfflineMode {
-            let local = LocalMediaProvider(tvTopLevel: tvTopLevel, musicTopLevel: musicTopLevel)
+            let local = LocalMediaProvider(tvTopLevel: tvTopLevel, musicTopLevel: musicTopLevel, includeDownloads: true)
             return local.hasContent ? [local] : []
         }
         var result: [any MediaProvider] = []
@@ -338,40 +404,36 @@ final class AppState {
         errorsBySection[section] = nil
         defer { loadingSections.remove(section) }
 
-        // Query every source at once; results are reassembled in provider
-        // order so the merged list is stable.
-        let sources = providers
-        let results = await withTaskGroup(of: (Int, Result<[MediaItem], Error>).self) { group in
-            for (index, provider) in sources.enumerated() {
-                group.addTask { @MainActor in
-                    do {
-                        if let mediaType = section.mediaType {
-                            return (index, .success(try await provider.items(for: mediaType)))
-                        }
-                        return (index, .success(section == .playlists ? try await provider.playlists() : []))
-                    } catch {
-                        return (index, .failure(error))
-                    }
-                }
+        // Query every source at once; results come back in source order so
+        // the merged list is stable.
+        let sources: [(provider: any MediaProvider, library: MediaLibrary?)]
+        if section.mediaType != nil {
+            await ensureLibrarySections()
+            let available = providers
+            sources = (sectionLibraries[section.id] ?? []).compactMap { entry in
+                available.first { $0.id == entry.providerID }.map { ($0, entry.library) }
             }
-            var results = [Result<[MediaItem], Error>?](repeating: nil, count: sources.count)
-            for await (index, result) in group { results[index] = result }
-            return results
+        } else {
+            sources = providers.map { ($0, nil) }
+        }
+        let results = await concurrently(sources) { source in
+            if let library = source.library {
+                return try await source.provider.items(inLibrary: library)
+            }
+            return try await source.provider.playlists()
         }
 
         var serverItems: [MediaItem] = []
         var localItems: [MediaItem] = []
         var failures: [String] = []
-        for (provider, result) in zip(sources, results) {
+        for (source, result) in zip(sources, results) {
             switch result {
-            case .success(let providerItems) where provider.source == .local:
-                localItems = providerItems
-            case .success(let providerItems):
-                serverItems += providerItems
+            case .success(let sourceItems) where source.provider.source == .local:
+                localItems += sourceItems
+            case .success(let sourceItems):
+                serverItems += sourceItems
             case .failure(let error):
-                failures.append("\(provider.source.rawValue): \(error.localizedDescription)")
-            case nil:
-                break
+                failures.append("\(source.provider.source.rawValue): \(error.localizedDescription)")
             }
         }
         // De-dupe: local items only appear when no server item with the same
@@ -383,6 +445,9 @@ final class AppState {
         itemsBySection[section] = items
         // Only surface errors when nothing loaded; partial results win.
         errorsBySection[section] = items.isEmpty && !failures.isEmpty ? failures.joined(separator: " • ") : nil
+        // Deep-search matches are placed by the section items they belong
+        // to, so redo the search once this section's items are known.
+        if isSearchActive, !trimmedQuery.isEmpty { scheduleDeepSearch() }
     }
 
     /// Bumped whenever the connected Plex servers (or their tokens) change,
@@ -398,6 +463,12 @@ final class AppState {
     /// Clears cached catalogs, e.g. after backend settings change.
     func resetCatalog() {
         cachedSources = nil
+        librarySectionsGeneration += 1
+        librarySectionsTask = nil
+        librarySections = nil
+        librarySectionsError = nil
+        sectionLibraries = [:]
+        Task { await ensureLibrarySections() }
         itemsBySection = [:]
         errorsBySection = [:]
         drillPath = [:]
@@ -453,14 +524,20 @@ final class AppState {
 
             var newItems: [MenuSection: [MediaItem]] = [:]
             var newChildren: [String: [MediaItem]] = [:]
-            for section in enabledSections {
-                guard let mediaType = section.mediaType else { continue }
+            let sections = enabledSections.filter { $0.mediaType != nil }
+            // Search once per media type, then place each match in the
+            // library section whose items contain its top-level ancestor.
+            for mediaType in MediaType.allCases where sections.contains(where: { $0.mediaType == mediaType }) {
+                let candidates = sections.filter { $0.mediaType == mediaType }.map { section in
+                    (section, Set(itemsBySection[section]?.map(\.id) ?? []))
+                }
                 var chains: [[MediaItem]] = []
                 for provider in providers {
                     chains += (try? await provider.deepSearch(query, type: mediaType)) ?? []
                 }
                 for chain in chains {
-                    guard let top = chain.first else { continue }
+                    guard let top = chain.first,
+                          let section = candidates.first(where: { $0.1.contains(top.id) })?.0 else { continue }
                     if !(newItems[section] ?? []).contains(where: { $0.id == top.id }) {
                         newItems[section, default: []].append(top)
                     }
@@ -502,11 +579,11 @@ final class AppState {
 
     private func sortedItems(_ items: [MediaItem], for section: MenuSection) -> [MediaItem] {
         let sortRaw: String, directionRaw: String, applyLocalFirst: Bool
-        switch section {
+        switch section.mediaType {
         case .movies: (sortRaw, directionRaw, applyLocalFirst) = (movieSortRaw, movieSortDirectionRaw, movieLocalFirst)
         case .tvShows: (sortRaw, directionRaw, applyLocalFirst) = (tvSortRaw, tvSortDirectionRaw, tvLocalFirst)
         case .music: (sortRaw, directionRaw, applyLocalFirst) = (musicSortRaw, musicSortDirectionRaw, musicLocalFirst)
-        default: return items
+        case nil: return items
         }
         let sort = LibrarySort(rawValue: sortRaw) ?? .byTitle
         let descending = SortDirection(rawValue: directionRaw) == .descending

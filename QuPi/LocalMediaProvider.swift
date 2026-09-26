@@ -8,13 +8,27 @@ import Foundation
 struct LocalMediaProvider: MediaProvider {
     var tvTopLevel: TVTopLevel = .series
     var musicTopLevel: MusicTopLevel = .album
+    /// Whether downloads are served here too. Only in Offline Mode: online,
+    /// downloaded items already show in their server's sections (with a
+    /// green tick), and here they couldn't be placed in the right library.
+    var includeDownloads = false
 
     var source: MediaSource { .local }
+    var id: String { "local" }
 
     // MARK: - MediaProvider
 
-    func items(for type: MediaType) async throws -> [MediaItem] {
-        let entries = DownloadManager.libraryIndexedEntries(for: type) + DownloadManager.indexedEntries(for: type)
+    /// One pseudo-library per media type with local content, named like
+    /// the menu's defaults ("Movies", "Shows", "Music"), so it merges with a
+    /// server library of the same name.
+    func libraries() async throws -> [MediaLibrary] {
+        types.map { MediaLibrary(id: $0.rawValue, name: $0.title, type: $0) }
+    }
+
+    func items(inLibrary library: MediaLibrary) async throws -> [MediaItem] {
+        let type = library.type
+        let entries = DownloadManager.libraryIndexedEntries(for: type)
+            + (includeDownloads ? DownloadManager.indexedEntries(for: type) : [])
         var indexedIDs = Set<String>()
         var filenames: [String: String] = [:]
         let indexed = entries.compactMap { entry -> MediaItem? in
@@ -65,12 +79,17 @@ struct LocalMediaProvider: MediaProvider {
 
     // MARK: - Content check
 
-    /// True when a library or download folder is set, used by AppState to
-    /// decide whether to register this provider. Deliberately a settings
-    /// lookup, not a scan: AppState.providers runs on every catalog access.
-    var hasContent: Bool {
-        MediaType.allCases.contains {
-            DownloadManager.libraryFolderPath(for: $0) != nil || DownloadManager.folderPath(for: $0) != nil
+    /// True when there is a folder to serve, used by AppState to decide
+    /// whether to register this provider.
+    var hasContent: Bool { !types.isEmpty }
+
+    /// Media types with a library folder set (or a download folder, when
+    /// serving downloads). Deliberately a settings lookup, not a scan:
+    /// AppState.providers runs on every catalog access.
+    private var types: [MediaType] {
+        MediaType.allCases.filter { type in
+            DownloadManager.libraryFolderPath(for: type) != nil
+                || (includeDownloads && DownloadManager.folderPath(for: type) != nil)
         }
     }
 

@@ -48,11 +48,17 @@ Preferences are read from `UserDefaults` via `SettingsKeys` and secrets from the
 
 1. One `PlexMediaProvider` per configured server (`PlexServerStore`, token per server in the Keychain)
 2. `JellyfinMediaProvider`, if configured
-3. `LocalMediaProvider`, when a library or download folder is set (`hasContent`)
+3. `LocalMediaProvider`, when a library folder is set (`hasContent`)
 
-In Offline Mode only `LocalMediaProvider` is used. There is no sample provider; `MediaSource.sample` is a leftover default.
+In Offline Mode only `LocalMediaProvider` is used, with `includeDownloads: true`; online it serves library folders only, since downloads already appear (with a green tick) in their server's sections. There is no sample provider; `MediaSource.sample` is kept only so old saved data decodes.
 
 Items from multiple Plex servers are routed back to their server via the `plexServerID` attribute (`PlexMediaProvider.serverIDAttribute`). Local items are de-duplicated against server item IDs in `AppState.load`.
+
+### Menu sections
+
+`MenuSection` is built from data, not a fixed list. `AppState.loadLibrarySections()` asks every provider for `libraries()` and makes one section per library name and type, in provider order; libraries with the same name and type on different servers share a section. `LocalMediaProvider` reports one pseudo-library per media type named `MediaType.title` ("Movies", "Shows", "Music"), so local media joins a server library with that name. `sectionLibraries` maps each section to its provider libraries, and `load(_:)` calls `items(inLibrary:)` for each. Playlists and Continue… are the only fixed sections. Sort settings are per media type, not per section. `resetCatalog()` reloads the sections.
+
+`MediaType.rawValue` ("TV Shows") is part of saved settings keys and local item IDs; show `MediaType.title` ("Shows") to users.
 
 ### Media hierarchy
 

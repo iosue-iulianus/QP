@@ -657,21 +657,23 @@ struct JellyfinMediaProvider: MediaProvider {
         try await client.deepSearch(query, type: type, tvTopLevel: tvTopLevel, musicTopLevel: musicTopLevel)
     }
 
-    func items(for type: MediaType) async throws -> [MediaItem] {
-        let libraries = try await client.libraries().filter { library in
-            library.mediaType == type
-                && (selectedLibraryIDs.isEmpty || selectedLibraryIDs.contains(library.id))
+    var id: String { "jellyfin" }
+
+    func libraries() async throws -> [MediaLibrary] {
+        try await client.libraries().compactMap { library in
+            guard let type = library.mediaType,
+                  selectedLibraryIDs.isEmpty || selectedLibraryIDs.contains(library.id) else { return nil }
+            return MediaLibrary(id: library.id, name: library.name, type: type)
         }
-        var all: [MediaItem] = []
-        for library in libraries {
-            all += try await client.items(
-                inLibrary: library.id,
-                type: type,
-                tvTopLevel: tvTopLevel,
-                musicTopLevel: musicTopLevel
-            )
-        }
-        return all
+    }
+
+    func items(inLibrary library: MediaLibrary) async throws -> [MediaItem] {
+        try await client.items(
+            inLibrary: library.id,
+            type: library.type,
+            tvTopLevel: tvTopLevel,
+            musicTopLevel: musicTopLevel
+        )
     }
 
     func streamURL(for item: MediaItem) async throws -> URL {

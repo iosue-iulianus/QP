@@ -54,6 +54,27 @@ struct MenuBarContentView: View {
                 Divider()
             }
 
+            if appState.librarySections == nil {
+                ProgressView("Loading libraries…")
+                    .controlSize(.small)
+                    .font(.caption)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                Divider()
+            } else if let error = appState.librarySectionsError {
+                VStack(spacing: 6) {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    Button("Retry") { appState.resetCatalog() }
+                        .controlSize(.small)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                Divider()
+            }
+
             let sections = appState.enabledSections
             ForEach(sections) { section in
                 self.section(for: section)
@@ -222,15 +243,16 @@ struct MenuBarContentView: View {
     private func sortMenu(for section: MenuSection) -> some View {
         @Bindable var appState = appState
         let sort: Binding<String>, direction: Binding<String>
-        switch section {
+        let type = section.mediaType ?? .movies
+        switch type {
+        case .movies: (sort, direction) = ($appState.movieSortRaw, $appState.movieSortDirectionRaw)
         case .tvShows: (sort, direction) = ($appState.tvSortRaw, $appState.tvSortDirectionRaw)
         case .music: (sort, direction) = ($appState.musicSortRaw, $appState.musicSortDirectionRaw)
-        default: (sort, direction) = ($appState.movieSortRaw, $appState.movieSortDirectionRaw)
         }
         let labels = (LibrarySort(rawValue: sort.wrappedValue) ?? .byTitle).directionTitles
         return Menu {
             Picker("Sort By", selection: sort) {
-                ForEach(LibrarySort.options(for: section), id: \.self) { option in
+                ForEach(LibrarySort.options(for: type), id: \.self) { option in
                     Text(option.title).tag(option.rawValue)
                 }
             }

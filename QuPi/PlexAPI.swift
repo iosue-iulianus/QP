@@ -874,21 +874,23 @@ struct PlexMediaProvider: MediaProvider {
         return item
     }
 
-    func items(for type: MediaType) async throws -> [MediaItem] {
-        let libraries = try await client.libraries().filter { library in
-            library.mediaType == type
-                && (selectedLibraryKeys.isEmpty || selectedLibraryKeys.contains(library.key))
+    var id: String { "plex:\(serverID)" }
+
+    func libraries() async throws -> [MediaLibrary] {
+        try await client.libraries().compactMap { library in
+            guard let type = library.mediaType,
+                  selectedLibraryKeys.isEmpty || selectedLibraryKeys.contains(library.key) else { return nil }
+            return MediaLibrary(id: library.key, name: library.title, type: type)
         }
-        var all: [MediaItem] = []
-        for library in libraries {
-            all += try await client.items(
-                inLibrary: library.key,
-                type: type,
-                tvTopLevel: tvTopLevel,
-                musicTopLevel: musicTopLevel
-            )
-        }
-        return all.map(tagged)
+    }
+
+    func items(inLibrary library: MediaLibrary) async throws -> [MediaItem] {
+        try await client.items(
+            inLibrary: library.id,
+            type: library.type,
+            tvTopLevel: tvTopLevel,
+            musicTopLevel: musicTopLevel
+        ).map(tagged)
     }
 
     func children(of item: MediaItem) async throws -> [MediaItem] {

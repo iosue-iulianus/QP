@@ -27,64 +27,65 @@ enum MediaType: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-/// The sections of the menu bar dropdown. The first three map to a
-/// MediaType; Playlists and Continue… are cross-cutting.
-enum MenuSection: String, CaseIterable, Identifiable, Codable {
-    case movies
-    case tvShows
-    case music
-    case playlists
-    case continueItems
+/// A library on a server (or a local media type), as reported by its
+/// provider.
+struct MediaLibrary: Hashable {
+    let id: String
+    let name: String
+    let type: MediaType
+}
 
-    var id: String { rawValue }
+/// A row in the menu bar dropdown: one per library, using the server's own
+/// library name (libraries with the same name and type on different servers
+/// share a row), plus the fixed Playlists and Continue… rows.
+struct MenuSection: Hashable, Identifiable {
+    enum Kind: Hashable {
+        case library(MediaType)
+        case playlists
+        case continueItems
+    }
 
-    var title: String {
-        switch self {
-        case .movies: "Movies"
-        case .tvShows: "Shows"
-        case .music: "Music"
-        case .playlists: "Playlists"
-        case .continueItems: "Continue…"
+    let id: String
+    let title: String
+    let kind: Kind
+
+    static let playlists = MenuSection(id: "playlists", title: "Playlists", kind: .playlists)
+    static let continueItems = MenuSection(id: "continueItems", title: "Continue…", kind: .continueItems)
+
+    /// The row for libraries called `name` that hold `type`.
+    static func library(named name: String, type: MediaType) -> MenuSection {
+        MenuSection(id: "library|\(type.rawValue)|\(name.lowercased())", title: name, kind: .library(type))
+    }
+
+    var mediaType: MediaType? {
+        switch kind {
+        case .library(let type): type
+        case .playlists, .continueItems: nil
         }
     }
 
     var systemImage: String {
-        switch self {
-        case .movies: "film"
-        case .tvShows: "tv"
-        case .music: "music.note"
+        switch kind {
+        case .library(let type): type.systemImage
         case .playlists: "music.note.list"
         case .continueItems: "clock.arrow.circlepath"
-        }
-    }
-
-    var mediaType: MediaType? {
-        switch self {
-        case .movies: .movies
-        case .tvShows: .tvShows
-        case .music: .music
-        case .playlists, .continueItems: nil
         }
     }
 
     /// Sections whose tracks play with the inline music overlay. Continue…
     /// is included so its grouped album/playlist cells can host the overlay.
     var supportsInlineMusic: Bool {
-        self == .music || self == .playlists || self == .continueItems
-    }
-
-    var enabledByDefault: Bool {
-        switch self {
-        case .movies, .tvShows, .music: true
-        case .playlists, .continueItems: false
+        switch kind {
+        case .library(let type): type == .music
+        case .playlists, .continueItems: true
         }
     }
 
     /// Loading-placeholder height while a section's catalog fetches.
     var loadingHeight: CGFloat {
-        switch self {
-        case .music, .playlists: 110
-        case .movies, .tvShows, .continueItems: 165
+        switch kind {
+        case .library(.music), .playlists: 110
+        case .library, .continueItems: 165
         }
     }
 }
@@ -289,8 +290,8 @@ enum LibrarySort: String, CaseIterable {
     }
 
     /// The sorts a section offers; Artist only applies to Music.
-    static func options(for section: MenuSection) -> [LibrarySort] {
-        section == .music ? allCases : allCases.filter { $0 != .byArtist }
+    static func options(for type: MediaType) -> [LibrarySort] {
+        type == .music ? allCases : allCases.filter { $0 != .byArtist }
     }
 
     /// True when `a` comes before `b`. Items without the value (no year or
@@ -427,7 +428,12 @@ extension MediaItem {
 /// sample catalog, Plex, and Jellyfin.
 protocol MediaProvider {
     var source: MediaSource { get }
-    func items(for type: MediaType) async throws -> [MediaItem]
+    /// Stable per server, so library sections can be routed back to it.
+    var id: String { get }
+    /// The libraries this provider serves; each becomes (part of) a menu section.
+    func libraries() async throws -> [MediaLibrary]
+    /// The top-level items of one of `libraries()`.
+    func items(inLibrary library: MediaLibrary) async throws -> [MediaItem]
     /// Children of a container: a show's seasons, a season's episodes,
     /// an artist's albums, an album's or playlist's tracks.
     func children(of item: MediaItem) async throws -> [MediaItem]
@@ -525,7 +531,7 @@ nonisolated enum SettingsKeys {
     static let musicSortDirection = "musicSortDirection"
 
     static func sectionEnabled(_ section: MenuSection) -> String {
-        "sectionEnabled_\(section.rawValue)"
+        "sectionEnabled_\(section.id)"
     }
 
     static func downloadFolderBookmark(_ type: MediaType) -> String {
