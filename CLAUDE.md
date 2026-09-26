@@ -99,4 +99,4 @@ MediaType (movies / tvShows / music)
 - New settings keys go in `SettingsKeys` or `KeychainKeys`, never as inline string literals.
 - Never put tokens in URLs that get saved (poster URLs end up in UserDefaults and download indexes). Load Plex artwork through `ArtworkCache.request(for:)`, which adds the token as a header.
 - The app name is **QuPi**. Avoid "QuickPlex" in user-facing strings and comments.
-- Keep `CHANGELOG.md` updated for user-visible changes.
+- Every user-visible change updates `CHANGELOG.md` and, when it changes what the fork offers or how to build it, the "About this fork" section of `README.md`, in the same commit.
