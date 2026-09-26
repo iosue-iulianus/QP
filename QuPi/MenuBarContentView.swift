@@ -95,6 +95,7 @@ struct MenuBarContentView: View {
         }
         .frame(width: contentWidth)
         .fixedSize(horizontal: false, vertical: true)
+        .onAppear { appState.menuDidOpen() }
         .onChange(of: searchFocused) {
             if searchFocused {
                 withAnimation(.snappy(duration: 0.2)) { appState.activateSearch() }
@@ -190,7 +191,9 @@ struct MenuBarContentView: View {
     // MARK: - Sections
 
     private func isExpanded(_ section: MenuSection) -> Bool {
-        appState.isFiltering || appState.expandedSection == section
+        appState.isFiltering
+            || appState.expandedSection == section
+            || (section == .continueItems && appState.isContinueExpanded)
     }
 
     /// One row under the search results: a spinner while results may still
@@ -338,6 +341,7 @@ struct MenuBarContentView: View {
                 navigationStep: playerMode == PlayerMode.inline.rawValue ? 1 : nil,
                 nowPlayingItem: (section.supportsInlineMusic && playerMode == PlayerMode.inline.rawValue) ? appState.currentItem : nil,
                 isPlaying: appState.isPlaying,
+                presentsEpisodesByShow: section == .continueItems,
                 onPlayPause: appState.togglePlayPause,
                 onPrevious: { appState.playInlineNeighbor(-1) },
                 onNext: { appState.playInlineNeighbor(1) }
@@ -349,7 +353,7 @@ struct MenuBarContentView: View {
             }
         } else {
             Text(section == .continueItems
-                 ? (appState.isOfflineMode ? "No downloaded items in progress." : "Nothing in progress — items you stop partway through appear here.")
+                 ? (appState.isOfflineMode ? "No downloaded items in progress." : "Nothing in progress. Items you start here or in Plex appear here.")
                  : "Nothing here yet.")
                 .font(.caption)
                 .foregroundStyle(.secondary)

@@ -37,7 +37,7 @@ struct MediaLibrary: Hashable {
 
 /// A row in the menu bar dropdown: one per library, using the server's own
 /// library name (libraries with the same name and type on different servers
-/// share a row), plus the fixed Playlists and Continue… rows.
+/// share a row), plus the fixed Playlists and Continue Watching rows.
 struct MenuSection: Hashable, Identifiable {
     enum Kind: Hashable {
         case library(MediaType)
@@ -50,7 +50,7 @@ struct MenuSection: Hashable, Identifiable {
     let kind: Kind
 
     static let playlists = MenuSection(id: "playlists", title: "Playlists", kind: .playlists)
-    static let continueItems = MenuSection(id: "continueItems", title: "Continue…", kind: .continueItems)
+    static let continueItems = MenuSection(id: "continueItems", title: "Continue Watching", kind: .continueItems)
 
     /// The row for libraries called `name` that hold `type`.
     static func library(named name: String, type: MediaType) -> MenuSection {
@@ -72,7 +72,7 @@ struct MenuSection: Hashable, Identifiable {
         }
     }
 
-    /// Sections whose tracks play with the inline music overlay. Continue…
+    /// Sections whose tracks play with the inline music overlay. Continue Watching
     /// is included so its grouped album/playlist cells can host the overlay.
     var supportsInlineMusic: Bool {
         switch kind {
@@ -94,7 +94,7 @@ struct MenuSection: Hashable, Identifiable {
 /// playback reporting.
 enum MediaSource: String, Codable, Hashable {
     /// No longer produced (the sample catalog is gone); kept so progress
-    /// saved by older builds still decodes instead of wiping Continue….
+    /// saved by older builds still decodes instead of wiping Continue Watching.
     case sample
     case plex
     case jellyfin
@@ -201,14 +201,14 @@ enum MusicAutoContinue: String, CaseIterable {
     case shuffleByGenre
 }
 
-/// Whether the Continue… section lists individual in-progress songs or
+/// Whether the Continue Watching section lists individual in-progress songs or
 /// collapses them into their parent album/playlist.
 enum ContinueMusicGrouping: String, CaseIterable {
     case byAlbumPlaylist
     case bySong
 }
 
-/// How long unfinished items stay in the Continue… section.
+/// How long unfinished items stay in the Continue Watching section.
 enum ContinueTimeout: String, CaseIterable {
     case day = "24h"
     case threeDays = "72h"
@@ -344,7 +344,7 @@ struct MediaItem: Identifiable, Hashable, Codable {
     var parentID: String?
     var parentKind: MediaKind?
     /// Display info for the container above, so a track can rebuild its parent
-    /// album/playlist cell in the grouped Continue… section without a fetch.
+    /// album/playlist cell in the grouped Continue Watching section without a fetch.
     var parentTitle: String?
     var parentPosterURL: URL?
     /// Source-specific extras (artist IDs, release dates, …) that
@@ -360,6 +360,11 @@ struct MediaItem: Identifiable, Hashable, Codable {
     /// How far through a partly watched item the server says playback got
     /// (0–1). Nil when not in progress or not reported.
     var watchedFraction: Double?
+    /// When the server says this was last played; orders Continue Watching
+    /// and decides whether the server's resume point is newer than QuPi's.
+    var lastViewedAt: Date?
+    /// Where the server says playback of a partly watched item stopped.
+    var resumePositionSeconds: Double?
 
     /// Release year when the subtitle carries one (used for Trakt matching).
     var year: Int? {
@@ -389,6 +394,18 @@ struct MediaItem: Identifiable, Hashable, Codable {
         case .artist, .album, .track, .playlist: 110
         case .movie, .show, .season: 165
         }
+    }
+
+    /// Whether this is an episode that knows its show, so Continue Watching
+    /// can present it by the show's poster and name.
+    var canPresentByShow: Bool {
+        kind == .episode && !(attributes["grandparentTitle"] ?? "").isEmpty
+    }
+
+    /// Poster height, using the show's portrait poster size for episodes
+    /// presented by their show.
+    func posterHeight(presentingEpisodesByShow byShow: Bool) -> CGFloat {
+        byShow && canPresentByShow ? 165 : posterHeight
     }
 }
 
@@ -458,10 +475,13 @@ protocol MediaProvider {
     func nextMovie(after item: MediaItem, by criterion: MovieAutoContinue) async throws -> MediaItem?
     /// A random other track by the same artist, for shuffle auto-continue.
     func randomTrack(sameArtistAs item: MediaItem) async throws -> MediaItem?
+    /// The server's own Continue Watching list, most recent first.
+    func continueWatching() async throws -> [MediaItem]
 }
 
 extension MediaProvider {
     func playlists() async throws -> [MediaItem] { [] }
+    func continueWatching() async throws -> [MediaItem] { [] }
     func deepSearch(_ query: String, type: MediaType) async throws -> [[MediaItem]] { [] }
     func downloadURL(for item: MediaItem) async throws -> URL { throw URLError(.unsupportedURL) }
     func nextMovie(after item: MediaItem, by criterion: MovieAutoContinue) async throws -> MediaItem? { nil }
@@ -556,6 +576,9 @@ nonisolated enum SettingsKeys {
     static func sectionEnabled(_ section: MenuSection) -> String {
         "sectionEnabled_\(section.id)"
     }
+    /// Whether Continue Watching is expanded. It opens and closes on its own,
+    /// independently of the one-open-at-a-time library sections.
+    static let continueExpanded = "continueExpanded"
 
     static func downloadFolderBookmark(_ type: MediaType) -> String {
         "downloadFolderBookmark_\(type.rawValue)"

@@ -109,7 +109,7 @@ struct LibrariesSettingsView: View {
         } header: {
             Text("Menu Order")
         } footer: {
-            Text("Drag sections to change their order in the menu, or Control-click one to move it. Playlists and Continue… are shown or hidden in Visuals.")
+            Text("Drag sections to change their order in the menu, or Control-click one to move it. Playlists and Continue Watching are shown or hidden in Visuals.")
                 .foregroundStyle(.secondary)
         }
         .task { await appState.ensureLibrarySections() }

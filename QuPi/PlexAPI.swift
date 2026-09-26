@@ -295,6 +295,7 @@ struct PlexClient {
         let viewCount: Int?
         let viewOffset: Int?
         let duration: Int?
+        let lastViewedAt: Int?
         let librarySectionID: Int?
         let Director: [Tag]?
         let Role: [Tag]?
@@ -364,7 +365,9 @@ struct PlexClient {
                 addedAt: entry.addedAt.map { Date(timeIntervalSince1970: TimeInterval($0)) },
                 playCount: entry.viewCount,
                 isWatched: Self.watchState(of: entry).isWatched,
-                watchedFraction: Self.watchState(of: entry).fraction
+                watchedFraction: Self.watchState(of: entry).fraction,
+                lastViewedAt: entry.lastViewedAt.map { Date(timeIntervalSince1970: TimeInterval($0)) },
+                resumePositionSeconds: Self.watchState(of: entry).fraction == nil ? nil : entry.viewOffset.map { Double($0) / 1000 }
             )
         }
     }
@@ -429,7 +432,9 @@ struct PlexClient {
                     "year": entry.year.map(String.init) ?? "" // Recoverable offline
                 ],
                 isWatched: Self.watchState(of: entry).isWatched,
-                watchedFraction: Self.watchState(of: entry).fraction
+                watchedFraction: Self.watchState(of: entry).fraction,
+                lastViewedAt: entry.lastViewedAt.map { Date(timeIntervalSince1970: TimeInterval($0)) },
+                resumePositionSeconds: Self.watchState(of: entry).fraction == nil ? nil : entry.viewOffset.map { Double($0) / 1000 }
             )
         }
     }
@@ -517,6 +522,67 @@ struct PlexClient {
         }
     }
 
+    // MARK: - Continue Watching
+
+    /// Plex's Continue Watching list: movies and episodes in progress, plus
+    /// the next episode of shows being watched, most recent first. Servers
+    /// without that hub get the older On Deck list, which holds the same
+    /// kind of items. Limited to `libraryKeys` unless empty.
+    func continueWatching(inLibraries libraryKeys: Set<String>) async throws -> [MediaItem] {
+        let data: Data
+        do {
+            data = try await fetchData(path: "/hubs/continueWatching/items").0
+        } catch PlexError.http(let status) where status == 404 {
+            data = try await fetchData(path: "/library/onDeck").0
+        }
+        let metadata = try JSONDecoder().decode(MetadataResponse.self, from: data).MediaContainer.Metadata ?? []
+        return metadata.compactMap { entry in
+            if !libraryKeys.isEmpty, let section = entry.librarySectionID,
+               !libraryKeys.contains(String(section)) {
+                return nil
+            }
+            switch entry.type {
+            case "movie": return movieItem(from: entry)
+            case "episode": return episodeItem(from: entry)
+            default: return nil
+            }
+        }
+    }
+
+    /// An episode listed outside its season (Continue Watching), with the
+    /// same fields `children(of:)` gives episodes, so playback, next-episode
+    /// auto-continue and downloads work the same.
+    private func episodeItem(from entry: Metadata) -> MediaItem {
+        MediaItem(
+            id: entry.ratingKey,
+            source: .plex,
+            type: .tvShows,
+            kind: .episode,
+            title: entry.title,
+            subtitle: entry.index.map { index in
+                entry.parentIndex.map { "S\($0)E\(index)" } ?? "Episode \(index)"
+            },
+            posterURL: (entry.thumb ?? entry.parentThumb).map(imageURL(thumbPath:)),
+            summary: entry.summary,
+            parentID: entry.parentRatingKey,
+            parentKind: entry.parentRatingKey == nil ? nil : .season,
+            parentTitle: entry.parentTitle,
+            parentPosterURL: entry.parentThumb.map(imageURL(thumbPath:)),
+            attributes: [
+                "originalPath": entry.Media?.first?.Part?.first?.file ?? "",
+                "grandparentTitle": entry.grandparentTitle ?? "",
+                "parentIndex": entry.parentIndex.map(String.init) ?? "",
+                "grandparentRatingKey": entry.grandparentRatingKey ?? "",
+                "grandparentPosterURL": entry.grandparentThumb.map(imageURL(thumbPath:))?.absoluteString ?? "",
+                "year": entry.year.map(String.init) ?? ""
+            ],
+            isWatched: Self.watchState(of: entry).isWatched,
+            watchedFraction: Self.watchState(of: entry).fraction,
+            lastViewedAt: entry.lastViewedAt.map { Date(timeIntervalSince1970: TimeInterval($0)) },
+            resumePositionSeconds: Self.watchState(of: entry).fraction == nil ? nil : entry.viewOffset.map { Double($0) / 1000 }
+        )
+    }
+
     // MARK: - Auto-continue queries
 
     private func metadata(forRatingKey key: String) async throws -> Metadata? {
@@ -540,7 +606,9 @@ struct PlexClient {
                 "year": entry.year.map(String.init) ?? "" // Recoverable offline
             ],
             isWatched: Self.watchState(of: entry).isWatched,
-            watchedFraction: Self.watchState(of: entry).fraction
+            watchedFraction: Self.watchState(of: entry).fraction,
+            lastViewedAt: entry.lastViewedAt.map { Date(timeIntervalSince1970: TimeInterval($0)) },
+            resumePositionSeconds: Self.watchState(of: entry).fraction == nil ? nil : entry.viewOffset.map { Double($0) / 1000 }
         )
     }
 
@@ -1031,5 +1099,9 @@ struct PlexMediaProvider: MediaProvider {
 
     func randomTrack(sameArtistAs item: MediaItem) async throws -> MediaItem? {
         try await client.randomTrack(sameArtistAs: item).map(tagged)
+    }
+
+    func continueWatching() async throws -> [MediaItem] {
+        try await client.continueWatching(inLibraries: selectedLibraryKeys).map(tagged)
     }
 }

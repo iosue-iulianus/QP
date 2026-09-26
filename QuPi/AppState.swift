@@ -13,6 +13,11 @@ final class AppState {
     var loadingSections: Set<MenuSection> = []
     var errorsBySection: [MenuSection: String] = [:]
     var expandedSection: MenuSection?
+    /// Continue Watching stays open alongside whichever library section is
+    /// open; expanded by default.
+    var isContinueExpanded: Bool = UserDefaults.standard.object(forKey: SettingsKeys.continueExpanded) as? Bool ?? true {
+        didSet { UserDefaults.standard.set(isContinueExpanded, forKey: SettingsKeys.continueExpanded) }
+    }
     var searchText = ""
     /// While active, every section is expanded and filtered live.
     var isSearchActive = false
@@ -215,17 +220,19 @@ final class AppState {
         didSet { resetCatalog() }
     }
 
-    /// The sections shown in the dropdown: one per library, then Playlists
-    /// and Continue… when enabled in Settings (both off by default), in the
-    /// order chosen in Settings > Libraries.
+    /// The sections shown in the dropdown: Continue Watching (on by default),
+    /// one per library, then Playlists (off by default), in the order chosen
+    /// in Settings > Libraries.
     var enabledSections: [MenuSection] {
         let fixed = [MenuSection.playlists, .continueItems].filter { section in
             if section == .continueItems && !isOfflineMode && plexConfigurations.isEmpty && jellyfinConfiguration == nil {
                 return false
             }
-            return UserDefaults.standard.bool(forKey: SettingsKeys.sectionEnabled(section))
+            // Continue Watching is on unless turned off; Playlists is opt-in.
+            return UserDefaults.standard.object(forKey: SettingsKeys.sectionEnabled(section)) as? Bool
+                ?? (section == .continueItems)
         }
-        return ordered((librarySections ?? []) + fixed)
+        return ordered(fixed.filter { $0 == .continueItems } + (librarySections ?? []) + fixed.filter { $0 == .playlists })
     }
 
     // MARK: - Section order
@@ -240,7 +247,7 @@ final class AppState {
     /// Every section that can appear in the menu, shown or not, in menu
     /// order. Used by the Menu Order list in Settings.
     var orderableSections: [MenuSection] {
-        ordered((librarySections ?? []) + [.playlists, .continueItems])
+        ordered([.continueItems] + (librarySections ?? []) + [.playlists])
     }
 
     /// Sorts sections by `sectionOrder`. Sections it doesn't mention yet
@@ -397,18 +404,31 @@ final class AppState {
 
     // MARK: - Catalog
 
+    /// Called each time the menu opens: refreshes Continue Watching when it's
+    /// shown open, so progress made on other devices appears.
+    func menuDidOpen() {
+        if isContinueExpanded, enabledSections.contains(.continueItems) {
+            Task { await load(.continueItems) }
+        }
+    }
+
     func toggleExpansion(of section: MenuSection) {
+        if section == .continueItems {
+            isContinueExpanded.toggle()
+            if isContinueExpanded { Task { await load(section) } }
+            return
+        }
         expandedSection = expandedSection == section ? nil : section
         if expandedSection == section {
             Task { await load(section) }
         }
     }
 
-    /// The Continue… items to display. In `.byAlbumPlaylist` mode, in-progress
+    /// The Continue Watching items to display. In `.byAlbumPlaylist` mode, in-progress
     /// music tracks collapse into their parent album/playlist cell (deduped,
     /// most-recent first); everything else passes through unchanged.
     func continueDisplayItems() -> [MediaItem] {
-        let raw = PlaybackProgressStore.all().map(\.item)
+        let raw = mergedContinueItems()
         guard continueMusicGrouping == .byAlbumPlaylist else { return raw }
         var result: [MediaItem] = []
         var seenContainerIDs = Set<String>()
@@ -424,8 +444,66 @@ final class AppState {
         return result
     }
 
+    // MARK: - Continue Watching from servers
+
+    /// The servers' own Continue Watching lists (Plex); nil until fetched.
+    private var serverContinueItems: [MediaItem]?
+    /// When the last complete fetch of `serverContinueItems` started; nil if
+    /// it has never completed or a server failed.
+    private var serverContinueFetchedAt: Date?
+
+    /// The servers' Continue Watching lists merged with QuPi's own progress
+    /// store, de-duplicated and ordered by when each item was last played.
+    /// Server items use the server's metadata. A Plex item in the local
+    /// store that Plex no longer lists (finished or removed elsewhere) is
+    /// dropped, unless it was played after Plex's list was fetched.
+    private func mergedContinueItems() -> [MediaItem] {
+        let local = PlaybackProgressStore.all()
+        let server = serverContinueItems ?? []
+        let serverIDs = Set(server.map(\.id))
+        let localDates = Dictionary(local.map { ($0.item.id, $0.updatedAt) }, uniquingKeysWith: max)
+
+        var entries: [(item: MediaItem, date: Date)] = []
+        for entry in local where !serverIDs.contains(entry.item.id) {
+            if entry.item.source == .plex, let fetchedAt = serverContinueFetchedAt, entry.updatedAt < fetchedAt {
+                continue
+            }
+            entries.append((entry.item, entry.updatedAt))
+        }
+        let timeout = UserDefaults.standard.string(forKey: SettingsKeys.continueTimeout)
+            .flatMap(ContinueTimeout.init) ?? .forever
+        let cutoff = timeout.maxAge.map { Date.now.addingTimeInterval(-$0) }
+        for item in server {
+            let date = max(item.lastViewedAt ?? .distantPast, localDates[item.id] ?? .distantPast)
+            if let cutoff, date < cutoff { continue }
+            entries.append((item, date))
+        }
+        return entries.sorted { $0.date > $1.date }.map(\.item)
+    }
+
+    /// Fetches every server's Continue Watching list and updates the
+    /// Continue Watching section. Skipped in Offline Mode.
+    private func refreshServerContinueItems() async {
+        guard !isOfflineMode else { return }
+        let started = Date.now
+        let results = await concurrently(providers) { provider in try await provider.continueWatching() }
+        var items: [MediaItem] = []
+        var failed = false
+        for result in results {
+            switch result {
+            case .success(let list): items += list
+            case .failure: failed = true
+            }
+        }
+        serverContinueItems = items
+        serverContinueFetchedAt = failed ? nil : started
+        if itemsBySection[.continueItems] != nil {
+            itemsBySection[.continueItems] = continueDisplayItems()
+        }
+    }
+
     /// Synthesises the album/playlist cell that stands in for an in-progress
-    /// track in the grouped Continue… section.
+    /// track in the grouped Continue Watching section.
     private func containerItem(for track: MediaItem, parentID: String) -> MediaItem {
         MediaItem(
             id: parentID,
@@ -438,7 +516,7 @@ final class AppState {
         )
     }
 
-    /// Resumes a grouped Continue… album/playlist: fetches its tracks, finds the
+    /// Resumes a grouped Continue Watching album/playlist: fetches its tracks, finds the
     /// most-recent in-progress one, and starts inline playback of the container
     /// from there (startPlayback seeks music to the saved position).
     func resumeContinueContainer(_ container: MediaItem) async {
@@ -453,8 +531,17 @@ final class AppState {
 
     func load(_ section: MenuSection, force: Bool = false) async {
         if loadingSections.contains(section) { return }
-        // Continue… is local and cheap; always refresh it.
+        // Continue Watching always refreshes: local progress shows at once, then the
+        // servers' lists are merged in. The first time, show a spinner until
+        // they arrive rather than a list that then reshuffles.
         if section == .continueItems {
+            if serverContinueItems != nil || isOfflineMode {
+                itemsBySection[section] = continueDisplayItems()
+            } else {
+                loadingSections.insert(section)
+            }
+            await refreshServerContinueItems()
+            loadingSections.remove(section)
             itemsBySection[section] = continueDisplayItems()
             return
         }
@@ -556,6 +643,7 @@ final class AppState {
         guard item.source == .plex, item.type != .music else { return }
         Task {
             try? await Task.sleep(for: .seconds(2))
+            await refreshServerContinueItems()
             for section in itemsBySection.keys where section.mediaType == item.type {
                 await refreshSilently(section)
             }
@@ -594,6 +682,8 @@ final class AppState {
         drillPath = [:]
         childrenByItemID = [:]
         childErrorsByItemID = [:]
+        serverContinueItems = nil
+        serverContinueFetchedAt = nil
     }
 
     // MARK: - Search
@@ -950,7 +1040,7 @@ final class AppState {
 
     // MARK: - Playback reporting
 
-    /// Fans playback state out to the local Continue… store, the item's
+    /// Fans playback state out to the local Continue Watching store, the item's
     /// server (resume position) and, on transitions, to Trakt (movies) and
     /// Last.fm (music).
     func reportPlayback(item: MediaItem, state: PlaybackState, positionSeconds: Double, durationSeconds: Double) {
@@ -1177,6 +1267,31 @@ final class AppState {
     /// True when either engine is active and ready for transport controls.
     var hasActivePlayer: Bool { player != nil || vlcBridge != nil }
 
+    /// Set by "Play from Beginning": the next start of this item ignores its
+    /// resume point.
+    var startOverItemID: String?
+
+    /// Where to start playing `item`: the more recent of QuPi's own saved
+    /// position and the server's resume point (which may come from another
+    /// device). Nil to start from the beginning, including for anything
+    /// finished during this session.
+    func resumePosition(for item: MediaItem) -> Double? {
+        let local = PlaybackProgressStore.entry(forItemID: item.id)
+        let position: Double?
+        switch (local, item.resumePositionSeconds) {
+        case let (local?, server?):
+            position = local.updatedAt >= (item.lastViewedAt ?? .distantPast) ? local.positionSeconds : server
+        case let (local?, nil):
+            position = local.positionSeconds
+        case let (nil, server?):
+            position = sessionWatchedIDs.contains(item.id) ? nil : server
+        case (nil, nil):
+            position = nil
+        }
+        guard let position, position > 5 else { return nil }
+        return position
+    }
+
     func startPlayback(item: MediaItem, inlinePlaylist: [MediaItem]? = nil) async {
         playbackGeneration += 1
         let generation = playbackGeneration
@@ -1184,6 +1299,8 @@ final class AppState {
         currentItem = item
         playbackError = nil
         self.inlinePlaylist = inlinePlaylist
+        let resume = startOverItemID == item.id ? nil : resumePosition(for: item)
+        startOverItemID = nil
         do {
             let url = try await streamURL(for: item)
             // Another session started (or the window closed) while the
@@ -1196,10 +1313,8 @@ final class AppState {
                 newPlayer.volume = volume
                 player = newPlayer
 
-                if item.type == .music {
-                    if let saved = PlaybackProgressStore.position(forItemID: item.id), saved > 5 {
-                        await newPlayer.seek(to: CMTime(seconds: saved, preferredTimescale: 600))
-                    }
+                if let resume {
+                    await newPlayer.seek(to: CMTime(seconds: resume, preferredTimescale: 600))
                 }
                 newPlayer.play()
                 reportPlayback(item: item, state: .started, positionSeconds: 0, durationSeconds: 0)
@@ -1267,7 +1382,7 @@ final class AppState {
                 }
             } else {
                 // ── SwiftVLC path (local files AVFoundation can't decode, e.g. .mkv) ──
-                await startVLCBridgePlayback(url: url, item: item, inlinePlaylist: inlinePlaylist, generation: generation)
+                await startVLCBridgePlayback(url: url, item: item, inlinePlaylist: inlinePlaylist, resumeAt: resume, generation: generation)
             }
         } catch {
             if generation == playbackGeneration {
@@ -1284,6 +1399,7 @@ final class AppState {
         url: URL,
         item: MediaItem,
         inlinePlaylist: [MediaItem]?,
+        resumeAt: Double?,
         generation: Int
     ) async {
         guard generation == playbackGeneration else { return }
@@ -1304,9 +1420,16 @@ final class AppState {
             guard let self else { return }
             var lastReport = Date.distantPast
             var wasPlaying = false
+            // libVLC can only seek once the media is open.
+            var pendingResume = resumeAt
             while !Task.isCancelled, generation == self.playbackGeneration {
                 try? await Task.sleep(for: .milliseconds(400))
                 guard !Task.isCancelled, generation == self.playbackGeneration else { break }
+
+                if let resume = pendingResume, bridge.isSeekable, bridge.durationSeconds > 0 {
+                    try? bridge.seek(toSeconds: resume)
+                    pendingResume = nil
+                }
 
                 let duration = bridge.durationSeconds
                 let time = bridge.currentTimeSeconds

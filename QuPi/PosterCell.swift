@@ -7,6 +7,10 @@ struct PosterCell: View {
     let item: MediaItem
     var isSelected = false
     var isCompact = false
+    /// Show an episode by its show's poster and name, with "S1E2 · Title"
+    /// underneath (Continue Watching). The item itself is unchanged, so playback
+    /// and downloads still use the episode's own title.
+    var presentsEpisodesByShow = false
     let action: () -> Void
 
     @Environment(AppState.self) private var appState
@@ -22,21 +26,40 @@ struct PosterCell: View {
     }
 
     private var cellHeight: CGFloat {
-        isCompact ? item.posterHeight * (MediaCarouselView.compactCellWidth / MediaCarouselView.baseCellWidth) : item.posterHeight
+        let height = item.posterHeight(presentingEpisodesByShow: presentsEpisodesByShow)
+        return isCompact ? height * (MediaCarouselView.compactCellWidth / MediaCarouselView.baseCellWidth) : height
+    }
+
+    /// The show an episode belongs to, when it should be presented by it.
+    private var episodeShowTitle: String? {
+        guard presentsEpisodesByShow, item.canPresentByShow else { return nil }
+        return item.attributes["grandparentTitle"]
     }
 
     private var displayTitle: String {
         if appState.tvTopLevel == .season, item.kind == .season {
             return item.parentTitle ?? item.subtitle ?? item.title
         }
-        return item.title
+        return episodeShowTitle ?? item.title
     }
 
     private var displaySubtitle: String? {
         if appState.tvTopLevel == .season, item.kind == .season {
             return item.title
         }
+        if episodeShowTitle != nil {
+            return [item.subtitle, item.title].compactMap { $0 }.joined(separator: " · ")
+        }
         return item.subtitle
+    }
+
+    /// Episodes shown by their show use the show's portrait poster.
+    private var posterURL: URL? {
+        if episodeShowTitle != nil,
+           let show = item.attributes["grandparentPosterURL"].flatMap(URL.init(string:)) {
+            return show
+        }
+        return item.posterURL
     }
 
     var body: some View {
@@ -61,6 +84,16 @@ struct PosterCell: View {
             }
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            // In-memory watch state, not resumePosition(for:), which reads the
+            // saved progress store: menu contents can be built on every redraw.
+            if !item.kind.isExpandable, appState.watchIndicator(for: item).fraction != nil {
+                Button("Play from Beginning", systemImage: "arrow.counterclockwise") {
+                    appState.startOverItemID = item.id
+                    action()
+                }
+            }
+        }
         .scaleEffect(isHovering ? 1.04 : 1)
         .animation(.snappy(duration: 0.15), value: isHovering)
         .onHover { isHovering = $0 }
@@ -199,7 +232,7 @@ struct PosterCell: View {
         ZStack {
             RoundedRectangle(cornerRadius: 8)
                 .fill(.quaternary)
-            if let url = item.posterURL {
+            if let url = posterURL {
                 ArtworkImage(url: url) {
                     ProgressView()
                         .controlSize(.small)

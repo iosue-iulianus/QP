@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Horizontal, swipeable poster carousel. Width and paging adapt to the
 /// carouselVisibleCount preference (3–6 cells); height fits the tallest
-/// poster kind present so mixed-content sections (Continue…) never clip.
+/// poster kind present so mixed-content sections (Continue Watching) never clip.
 struct MediaCarouselView: View {
     static let baseCellWidth: CGFloat = 110
     static let compactCellWidth: CGFloat = 76
@@ -21,6 +21,9 @@ struct MediaCarouselView: View {
     var nowPlayingItem: MediaItem?
     var isPlaying: Bool = false
     var isCompact: Bool = false
+    /// Show episodes by their show's poster and name (Continue Watching), with the
+    /// episode in the subtitle.
+    var presentsEpisodesByShow = false
     
     var onPlayPause: (() -> Void)?
     var onPrevious: (() -> Void)?
@@ -43,7 +46,7 @@ struct MediaCarouselView: View {
             return isCompact ? 50 : 58
         }
         
-        let maxPoster = items.map(\.posterHeight).max() ?? 110
+        let maxPoster = items.map { $0.posterHeight(presentingEpisodesByShow: presentsEpisodesByShow) }.max() ?? 110
         let scaledPoster = isCompact ? maxPoster * (Self.compactCellWidth / Self.baseCellWidth) : maxPoster
         return scaledPoster + (isCompact ? 26 : 30)
     }
@@ -66,7 +69,7 @@ struct MediaCarouselView: View {
     /// Finds the exact item matching the currently playing track, or its parent (album/playlist).
     private var overlayItemID: String? {
         guard let nowPlaying = nowPlayingItem else { return nil }
-        // Match the playing track directly, or — in the grouped Continue…
+        // Match the playing track directly, or — in the grouped Continue Watching
         // section — the album/playlist cell that contains it.
         let candidateIDs = [nowPlaying.id, nowPlaying.parentID].compactMap { $0 }
         return items.first(where: { candidateIDs.contains($0.id) })?.id
@@ -78,7 +81,7 @@ struct MediaCarouselView: View {
                 ForEach(items, id: \.uniqueID) { item in
                     let isNowPlaying = item.id == overlayItemID
                     ZStack(alignment: .top) {
-                        PosterCell(item: item, isSelected: item.id == selectedID, isCompact: isCompact) {
+                        PosterCell(item: item, isSelected: item.id == selectedID, isCompact: isCompact, presentsEpisodesByShow: presentsEpisodesByShow) {
                             onSelect(item)
                         }
                         if isNowPlaying, let onPlayPause {
@@ -99,7 +102,7 @@ struct MediaCarouselView: View {
                             // Cover only the artwork, or the entire box if in simple visuals
                             .frame(
                                 width: cellWidth,
-                                height: simpleVisuals ? maxCellHeight : (isCompact ? item.posterHeight * (Self.compactCellWidth / Self.baseCellWidth) : item.posterHeight)
+                                height: simpleVisuals ? maxCellHeight : (isCompact ? item.posterHeight(presentingEpisodesByShow: presentsEpisodesByShow) * (Self.compactCellWidth / Self.baseCellWidth) : item.posterHeight(presentingEpisodesByShow: presentsEpisodesByShow))
                             )
                         }
                     }
