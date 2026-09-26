@@ -216,7 +216,8 @@ final class AppState {
     }
 
     /// The sections shown in the dropdown: one per library, then Playlists
-    /// and Continue… when enabled in Settings (both off by default).
+    /// and Continue… when enabled in Settings (both off by default), in the
+    /// order chosen in Settings > Libraries.
     var enabledSections: [MenuSection] {
         let fixed = [MenuSection.playlists, .continueItems].filter { section in
             if section == .continueItems && !isOfflineMode && plexConfigurations.isEmpty && jellyfinConfiguration == nil {
@@ -224,7 +225,59 @@ final class AppState {
             }
             return UserDefaults.standard.bool(forKey: SettingsKeys.sectionEnabled(section))
         }
-        return (librarySections ?? []) + fixed
+        return ordered((librarySections ?? []) + fixed)
+    }
+
+    // MARK: - Section order
+
+    /// Section ids in the user's chosen order. Empty until the user reorders.
+    /// Ids of sections that aren't currently shown are kept, so a hidden
+    /// library returns to its place when it's shown again.
+    var sectionOrder: [String] = UserDefaults.standard.stringArray(forKey: SettingsKeys.sectionOrder) ?? [] {
+        didSet { UserDefaults.standard.set(sectionOrder, forKey: SettingsKeys.sectionOrder) }
+    }
+
+    /// Every section that can appear in the menu, shown or not, in menu
+    /// order. Used by the Menu Order list in Settings.
+    var orderableSections: [MenuSection] {
+        ordered((librarySections ?? []) + [.playlists, .continueItems])
+    }
+
+    /// Sorts sections by `sectionOrder`. Sections it doesn't mention yet
+    /// (e.g. a library added on the server) keep their default order after
+    /// the ones it does.
+    private func ordered(_ sections: [MenuSection]) -> [MenuSection] {
+        guard !sectionOrder.isEmpty else { return sections }
+        let rank = Dictionary(sectionOrder.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+        return sections.enumerated().sorted { a, b in
+            switch (rank[a.element.id], rank[b.element.id]) {
+            case let (x?, y?): x < y
+            case (.some, nil): true
+            case (nil, .some): false
+            case (nil, nil): a.offset < b.offset
+            }
+        }
+        .map(\.element)
+    }
+
+    /// Applies a drag in the Menu Order list. Only the listed sections move;
+    /// saved positions of sections not in the list are left alone.
+    func moveSections(_ sections: [MenuSection], fromOffsets source: IndexSet, toOffset destination: Int) {
+        // Same result as SwiftUI's Array.move(fromOffsets:toOffset:).
+        let ids = sections.map(\.id)
+        var moved = ids.indices.filter { !source.contains($0) }.map { ids[$0] }
+        let insertAt = destination - source.count(where: { $0 < destination })
+        moved.insert(contentsOf: source.map { ids[$0] }, at: insertAt)
+        var order = sectionOrder
+        for id in sections.map(\.id) where !order.contains(id) {
+            order.append(id)
+        }
+        let listed = Set(moved)
+        let slots = order.indices.filter { listed.contains(order[$0]) }
+        for (slot, id) in zip(slots, moved) {
+            order[slot] = id
+        }
+        sectionOrder = order
     }
 
     // MARK: - Library sections

@@ -54,6 +54,7 @@ struct LibrariesSettingsView: View {
                     allKeys: jellyfinLibraries.map { $0.id }
                 )
             }
+            menuOrderSection
         }
         .formStyle(.grouped)
         // Re-runs when servers are added/removed in the Accounts tab, so the
@@ -61,6 +62,61 @@ struct LibrariesSettingsView: View {
         .task(id: appState.serverConfigurationVersion) { refresh() }
         .onChange(of: plexSelected) { appState.resetCatalog() }
         .onChange(of: jellyfinSelected) { appState.resetCatalog() }
+    }
+
+    /// Drag to reorder the menu's sections (or use the context menu). A
+    /// bordered list, since rows in a grouped Form can't be dragged on macOS.
+    /// Hidden sections are listed too, so they land in the right place when
+    /// shown.
+    private var menuOrderSection: some View {
+        Section {
+            let sections = appState.orderableSections
+            List {
+                ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
+                    HStack {
+                        Image(systemName: "line.3.horizontal")
+                            .foregroundStyle(.tertiary)
+                            .accessibilityHidden(true)
+                        Label(section.title, systemImage: section.systemImage)
+                        Spacer()
+                        if !appState.enabledSections.contains(section) {
+                            Text("Hidden")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .contextMenu {
+                        Button("Move to Top") { move(sections, from: index, to: 0) }
+                            .disabled(index == 0)
+                        Button("Move Up") { move(sections, from: index, to: index - 1) }
+                            .disabled(index == 0)
+                        Button("Move Down") { move(sections, from: index, to: index + 2) }
+                            .disabled(index == sections.count - 1)
+                        Button("Move to Bottom") { move(sections, from: index, to: sections.count) }
+                            .disabled(index == sections.count - 1)
+                    }
+                }
+                .onMove { source, destination in
+                    appState.moveSections(sections, fromOffsets: source, toOffset: destination)
+                }
+            }
+            .listStyle(.bordered(alternatesRowBackgrounds: true))
+            .frame(height: CGFloat(min(max(sections.count, 1), 8)) * 26 + 6)
+            if !appState.sectionOrder.isEmpty {
+                Button("Reset to Default Order") {
+                    appState.sectionOrder = []
+                }
+            }
+        } header: {
+            Text("Menu Order")
+        } footer: {
+            Text("Drag sections to change their order in the menu, or Control-click one to move it. Playlists and Continue… are shown or hidden in Visuals.")
+                .foregroundStyle(.secondary)
+        }
+        .task { await appState.ensureLibrarySections() }
+    }
+
+    private func move(_ sections: [MenuSection], from index: Int, to destination: Int) {
+        appState.moveSections(sections, fromOffsets: IndexSet(integer: index), toOffset: destination)
     }
 
     private var localSection: some View {

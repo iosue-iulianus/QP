@@ -586,6 +586,8 @@ nonisolated enum SettingsKeys {
     static let movieLocalFirst = "movieLocalFirst"
     static let tvLocalFirst = "tvLocalFirst"
     static let musicLocalFirst = "musicLocalFirst"
+    /// Menu section ids in the user's chosen order (Settings > Libraries).
+    static let sectionOrder = "sectionOrder"
 }
 
 /// Keychain item names for secrets.
