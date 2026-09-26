@@ -1,5 +1,6 @@
 import SwiftUI
 import AVKit
+import Combine
 
 /// Playback window for a media item (AVKit for video, mini-player for music).
 /// Handles async stream resolution, scrobbling, position resuming, and queue management.
@@ -280,19 +281,17 @@ struct PlayerView: View {
         appState.isScrubbing = false
     }
 
-    /// Polls the current item's presentation size, which (unlike the asset's
-    /// video-track natural size) is also populated for HLS streams once
-    /// playback starts, and follows the item when auto-continue swaps it.
+    /// Observes (KVO) the current item's presentation size, which (unlike
+    /// the asset's video-track natural size) is also populated for HLS
+    /// streams once playback starts, and follows the item when
+    /// auto-continue swaps it. Ends when the view's task is cancelled.
     private func observeVideoAspectRatio(of player: AVPlayer) async {
-        while !Task.isCancelled {
-            if let size = player.currentItem?.presentationSize,
-               size.width > 0, size.height > 0 {
-                let ratio = size.width / size.height
-                if videoAspectRatio != ratio {
-                    videoAspectRatio = ratio
-                }
+        for await size in player.publisher(for: \.currentItem?.presentationSize).values {
+            guard let size, size.width > 0, size.height > 0 else { continue }
+            let ratio = size.width / size.height
+            if videoAspectRatio != ratio {
+                videoAspectRatio = ratio
             }
-            try? await Task.sleep(for: .milliseconds(250))
         }
     }
 
