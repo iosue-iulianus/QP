@@ -6,7 +6,9 @@ This is a fork of [KuDoZ007/QP](https://github.com/KuDoZ007/QP). The main differ
 *   **Your libraries, your names.** The menu shows one section per server library, named as on the server (for example Movies, Shows and YouTube), instead of fixed Movies / TV Shows / Music sections. Choose which libraries appear in Settings > Libraries. "TV Shows" is called "Shows" throughout.
 *   **Sorting.** Movies and shows are sorted by date added, newest first, by default. A small sort button on each open section changes the field and order without opening Settings.
 *   **Easier sign-in.** Jellyfin Quick Connect (approve a code from another signed-in device, no password). Server addresses work without `http://` or `https://`; the app tries HTTPS first, then HTTP. The TMDb API key field checks the key as you type.
-*   **Security.** Plex tokens are no longer saved in plain text inside poster URLs, the TMDb key is stored in the Keychain, and `Secrets.swift` is no longer committed (the upstream `.gitignore` pointed to the wrong path).
+*   **Security.** The Plex token is never sent over plain HTTP to a remote address, Plex tokens are no longer saved in plain text inside poster URLs, the TMDb key is stored in the Keychain, and `Secrets.swift` is no longer committed (the upstream `.gitignore` pointed to the wrong path).
+*   **Plex away from home.** All of a server's addresses are checked at once and the fastest is used, so switching to a hotspot or VPN connects in seconds instead of minutes.
+*   **Search and accounts.** Search ignores spaces, punctuation and accents ("madmen" finds "Mad Men"). Settings > Accounts shows the signed-in Plex account with a Sign Out button.
 *   **Faster.** Server settings and download indexes stay in memory instead of being re-read from the Keychain and disk on every redraw, sources load in parallel, and a Plex address that works is remembered.
 *   **Fixes.** Offline Mode works with downloads alone, and Plex errors are readable.
 *   **Leaner.** The unfinished transcoding feature and other unused code are removed (about 1,450 lines), so FFmpeg is no longer needed.

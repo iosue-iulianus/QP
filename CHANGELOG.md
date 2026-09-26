@@ -3,6 +3,21 @@
 Changes in this fork compared to [KuDoZ007/QP](https://github.com/KuDoZ007/QP).
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026-09-27
+
+### Added
+
+- Settings > Accounts shows the signed-in Plex account (username, email and a green "Signed In") with a Sign Out… button, instead of the "Sign In with Plex…" button. Signing out asks for confirmation, then removes the account and the servers connected through it. Test Connection says which address it connected to.
+
+### Changed
+
+- Plex connects in seconds away from home. All known addresses of a server are checked at once (Plex's token-free `/identity` endpoint, 3 s limit) on first use, after a network change (Wi-Fi, hotspot, VPN) and when the current address stops answering, and the fastest one is used and saved. Before, each unreachable LAN address had to time out (about 60 s each) first.
+- Search ignores spaces, punctuation, case and accents in titles, so "madmen" finds "Mad Men" and "amelie" finds "Amélie".
+
+### Security
+
+- The Plex token is never sent over plain HTTP to a remote address. Discovered remote connections are HTTPS only; local ones try HTTPS before HTTP.
+
 ## 2026-09-26
 
 ### Added
