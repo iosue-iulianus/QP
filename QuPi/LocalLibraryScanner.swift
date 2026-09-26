@@ -38,7 +38,7 @@ struct LocalLibraryScanner {
             let id = itemID(relativePath: relativePath)
             var item = MediaItem(id: id, source: .local, type: .movies, kind: .movie, title: title)
             item.subtitle = year.map { "\($0)" }
-            item.posterURL = localArtworkURL(in: url.deletingLastPathComponent(), stem: nil) ?? localArtworkURL(in: url.deletingLastPathComponent(), stem: stem)
+            item.posterURL = Self.artworkURL(in: url.deletingLastPathComponent(), stem: nil) ?? Self.artworkURL(in: url.deletingLastPathComponent(), stem: stem)
             return DownloadIndexEntry(item: item, filename: relativePath)
         }
     }
@@ -54,8 +54,8 @@ struct LocalLibraryScanner {
             let showID = itemID(relativePath: showTitle)
             var showItem = MediaItem(id: showID, source: .local, type: .tvShows, kind: .show, title: showTitle)
             // Show poster: sibling naming (ShowTitle.jpg in TV root) with fallback to poster.* inside show dir.
-            showItem.posterURL = localArtworkURL(in: folder, stem: showTitle)
-                ?? localArtworkURL(in: showDir, stem: nil)
+            showItem.posterURL = Self.artworkURL(in: folder, stem: showTitle)
+                ?? Self.artworkURL(in: showDir, stem: nil)
 
             let seasonDirs = subdirectories(of: showDir)
             if seasonDirs.isEmpty {
@@ -70,7 +70,7 @@ struct LocalLibraryScanner {
                     ep.parentID = showID
                     ep.parentKind = .show
                     ep.subtitle = formatEpisodeCode(season: season, episode: episode)
-                    ep.posterURL = localArtworkURL(in: showDir, stem: stem)
+                    ep.posterURL = Self.artworkURL(in: showDir, stem: stem)
                     entries.append(DownloadIndexEntry(item: ep, filename: rel))
                 }
             } else {
@@ -83,8 +83,8 @@ struct LocalLibraryScanner {
                     seasonItem.parentKind = .show
                     seasonItem.subtitle = seasonNumber.map { "Season \($0)" }
                     // Season poster: sibling naming (SeasonTitle.jpg in show dir) with fallbacks.
-                    seasonItem.posterURL = localArtworkURL(in: showDir, stem: seasonTitle)
-                        ?? localArtworkURL(in: seasonDir, stem: nil)
+                    seasonItem.posterURL = Self.artworkURL(in: showDir, stem: seasonTitle)
+                        ?? Self.artworkURL(in: seasonDir, stem: nil)
                         ?? showItem.posterURL
 
                     let files = mediaFiles(in: seasonDir, recursive: false)
@@ -97,7 +97,7 @@ struct LocalLibraryScanner {
                         ep.parentID = seasonID
                         ep.parentKind = .season
                         ep.subtitle = formatEpisodeCode(season: seasonNumber, episode: episode)
-                        ep.posterURL = localArtworkURL(in: seasonDir, stem: stem)
+                        ep.posterURL = Self.artworkURL(in: seasonDir, stem: stem)
                         entries.append(DownloadIndexEntry(item: ep, filename: rel))
                     }
 
@@ -122,7 +122,7 @@ struct LocalLibraryScanner {
             let id = itemID(relativePath: rel)
             var ep = MediaItem(id: id, source: .local, type: .tvShows, kind: .episode, title: epTitle)
             ep.subtitle = formatEpisodeCode(season: season, episode: episode)
-            ep.posterURL = localArtworkURL(in: folder, stem: stem)
+            ep.posterURL = Self.artworkURL(in: folder, stem: stem)
             entries.append(DownloadIndexEntry(item: ep, filename: rel))
         }
 
@@ -139,7 +139,7 @@ struct LocalLibraryScanner {
             let artistName = artistDir.lastPathComponent
             let artistID = itemID(relativePath: artistName)
             var artistItem = MediaItem(id: artistID, source: .local, type: .music, kind: .artist, title: artistName)
-            artistItem.posterURL = localArtworkURL(in: artistDir, stem: nil)
+            artistItem.posterURL = Self.artworkURL(in: artistDir, stem: nil)
 
             let albumDirs = subdirectories(of: artistDir)
             for albumDir in albumDirs {
@@ -149,7 +149,7 @@ struct LocalLibraryScanner {
                 albumItem.subtitle = artistName
                 albumItem.parentID = artistID
                 albumItem.parentKind = .artist
-                albumItem.posterURL = localArtworkURL(in: albumDir, stem: nil) ?? artistItem.posterURL
+                albumItem.posterURL = Self.artworkURL(in: albumDir, stem: nil) ?? artistItem.posterURL
 
                 let files = mediaFiles(in: albumDir, recursive: false)
                 for file in files {
@@ -199,7 +199,7 @@ struct LocalLibraryScanner {
             let trackTitle = parseTrackTitle(from: stem)
             let id = itemID(relativePath: rel)
             var track = MediaItem(id: id, source: .local, type: .music, kind: .track, title: trackTitle)
-            track.posterURL = localArtworkURL(in: folder, stem: nil) ?? localArtworkURL(in: folder, stem: stem)
+            track.posterURL = Self.artworkURL(in: folder, stem: nil) ?? Self.artworkURL(in: folder, stem: stem)
             entries.append(DownloadIndexEntry(item: track, filename: rel))
         }
 
@@ -208,7 +208,8 @@ struct LocalLibraryScanner {
 
     // MARK: - Filesystem helpers
 
-    private func localArtworkURL(in folder: URL, stem: String?) -> URL? {
+    /// The first existing `<stem>.jpg/.png/.jpeg` (or `poster.*` when no stem) in `folder`.
+    static func artworkURL(in folder: URL, stem: String?) -> URL? {
         let candidates: [String]
         if let stem {
             candidates = ["\(stem).jpg", "\(stem).png", "\(stem).jpeg"]

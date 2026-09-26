@@ -106,22 +106,6 @@ struct LocalMediaProvider: MediaProvider {
 
     // MARK: - Helpers
 
-    private func localArtworkURL(in folder: URL, stem: String?) -> URL? {
-        let candidates: [String]
-        if let stem {
-            candidates = ["\(stem).jpg", "\(stem).png", "\(stem).jpeg"]
-        } else {
-            candidates = ["poster.jpg", "poster.png", "poster.jpeg"]
-        }
-        for candidate in candidates {
-            let url = folder.appending(path: candidate)
-            if FileManager.default.fileExists(atPath: url.path) {
-                return url
-            }
-        }
-        return nil
-    }
-
     private func localArtworkURL(filename: String?, type: MediaType,
                                  kind: MediaKind? = nil, title: String? = nil,
                                  parentTitle: String? = nil) -> URL? {
@@ -131,33 +115,27 @@ struct LocalMediaProvider: MediaProvider {
                 let fileURL = folder.appending(path: filename)
                 let baseDir = fileURL.deletingLastPathComponent()
                 let stem = fileURL.deletingPathExtension().lastPathComponent
-                if let url = localArtworkURL(in: baseDir, stem: stem) { return url }
-                if let url = localArtworkURL(in: baseDir, stem: nil) { return url }
+                if let url = LocalLibraryScanner.artworkURL(in: baseDir, stem: stem) { return url }
+                if let url = LocalLibraryScanner.artworkURL(in: baseDir, stem: nil) { return url }
             } else if kind == .show, let title {
                 // Sibling naming: ShowTitle.jpg sits next to show folder, inside type root.
-                if let url = localArtworkURL(in: folder, stem: sanitize(title)) { return url }
+                if let url = LocalLibraryScanner.artworkURL(in: folder, stem: DownloadManager.sanitizePathComponent(title)) { return url }
                 // Fallback: poster.* inside the show folder.
-                if let url = localArtworkURL(in: folder.appending(path: sanitize(title)), stem: nil) { return url }
+                if let url = LocalLibraryScanner.artworkURL(in: folder.appending(path: DownloadManager.sanitizePathComponent(title)), stem: nil) { return url }
             } else if kind == .season, let title {
                 // Sibling naming: SeasonTitle.jpg sits next to season folder, inside show folder.
                 if let parent = parentTitle {
-                    let showDir = folder.appending(path: sanitize(parent))
-                    if let url = localArtworkURL(in: showDir, stem: sanitize(title)) { return url }
+                    let showDir = folder.appending(path: DownloadManager.sanitizePathComponent(parent))
+                    if let url = LocalLibraryScanner.artworkURL(in: showDir, stem: DownloadManager.sanitizePathComponent(title)) { return url }
                     // Fallback: poster.* inside the season folder.
-                    if let url = localArtworkURL(in: showDir.appending(path: sanitize(title)), stem: nil) { return url }
+                    if let url = LocalLibraryScanner.artworkURL(in: showDir.appending(path: DownloadManager.sanitizePathComponent(title)), stem: nil) { return url }
                 } else {
-                    if let url = localArtworkURL(in: folder, stem: sanitize(title)) { return url }
-                    if let url = localArtworkURL(in: folder.appending(path: sanitize(title)), stem: nil) { return url }
+                    if let url = LocalLibraryScanner.artworkURL(in: folder, stem: DownloadManager.sanitizePathComponent(title)) { return url }
+                    if let url = LocalLibraryScanner.artworkURL(in: folder.appending(path: DownloadManager.sanitizePathComponent(title)), stem: nil) { return url }
                 }
             }
         }
         return nil
-    }
-
-    private func sanitize(_ s: String) -> String {
-        var r = s.replacing("/", with: "-").replacing(":", with: "-")
-        while r.hasPrefix(".") { r = String(r.dropFirst()) }
-        return r.isEmpty ? "Unknown" : r
     }
 
     private func localised(_ item: MediaItem, filename: String?) -> MediaItem {

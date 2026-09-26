@@ -500,14 +500,7 @@ final class AppState {
             direction == .ascending ? comparator(a, b) : comparator(b, a)
         }
         if applyLocalFirst {
-            let dm = DownloadManager.shared
-            let downloadedIDs: Set<String>
-            switch section {
-            case .movies: downloadedIDs = dm.downloadedMovieIDs
-            case .tvShows: downloadedIDs = dm.downloadedTVShowIDs
-            case .music: downloadedIDs = dm.downloadedMusicIDs
-            default: downloadedIDs = []
-            }
+            let downloadedIDs = section.mediaType.flatMap { DownloadManager.shared.downloadedIDs[$0] } ?? []
             if !downloadedIDs.isEmpty {
                 let locals = sorted.filter { downloadedIDs.contains($0.id) }
                 let remotes = sorted.filter { !downloadedIDs.contains($0.id) }

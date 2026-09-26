@@ -27,22 +27,21 @@ final class DownloadManager {
     /// Tracks download progress (0.0 to 1.0) for active downloads by item ID.
     var downloadProgress: [String: Double] = [:]
 
-    /// In-memory caches of downloaded item IDs per type, populated on launch and
+    /// In-memory cache of downloaded item IDs per type, populated on launch and
     /// updated on each download completion. Used by sortedItems for O(1) Local First
     /// checks instead of reading the JSON index from disk on every sort call.
-    var downloadedMovieIDs: Set<String> = []
-    var downloadedTVShowIDs: Set<String> = []
-    var downloadedMusicIDs: Set<String> = []
+    var downloadedIDs: [MediaType: Set<String>] = [:]
 
     // MARK: - Init / folder lifetime access
 
-    private var openedFolders: [MediaType: URL] = [:]
-    private var openedLibraryFolders: [MediaType: URL] = [:]
+    /// Folders currently held open for security-scoped access, keyed by
+    /// their bookmark's UserDefaults key.
+    private var openedFolders: [String: URL] = [:]
 
     private init() {
         for type in MediaType.allCases {
-            refreshFolderAccess(for: type)
-            refreshLibraryFolderAccess(for: type)
+            refreshAccess(bookmarkKey: SettingsKeys.downloadFolderBookmark(type))
+            refreshAccess(bookmarkKey: SettingsKeys.libraryFolderBookmark(type))
         }
         cleanUpOrphans()
         populateDownloadedIDCache()
@@ -56,15 +55,7 @@ final class DownloadManager {
                 guard let filename = entry.filename else { return entry.item.id }
                 return FileManager.default.fileExists(atPath: folder.appending(path: filename).path) ? entry.item.id : nil
             })
-            setDownloadedIDs(ids, for: type)
-        }
-    }
-
-    private func setDownloadedIDs(_ ids: Set<String>, for type: MediaType) {
-        switch type {
-        case .movies: downloadedMovieIDs = ids
-        case .tvShows: downloadedTVShowIDs = ids
-        case .music: downloadedMusicIDs = ids
+            downloadedIDs[type] = ids
         }
     }
 
@@ -93,36 +84,18 @@ final class DownloadManager {
         }
     }
 
-    private func refreshFolderAccess(for type: MediaType) {
-        if let old = openedFolders[type] {
-            old.stopAccessingSecurityScopedResource()
-            openedFolders[type] = nil
-        }
-        if let folder = Self.resolvedFolder(for: type),
-           folder.startAccessingSecurityScopedResource() {
-            openedFolders[type] = folder
-        }
-    }
-
-    private func refreshLibraryFolderAccess(for type: MediaType) {
-        if let old = openedLibraryFolders[type] {
-            old.stopAccessingSecurityScopedResource()
-            openedLibraryFolders[type] = nil
-        }
-        if let folder = Self.resolvedLibraryFolder(for: type),
-           folder.startAccessingSecurityScopedResource() {
-            openedLibraryFolders[type] = folder
+    private func refreshAccess(bookmarkKey: String) {
+        openedFolders.removeValue(forKey: bookmarkKey)?.stopAccessingSecurityScopedResource()
+        if let folder = Self.resolveBookmark(bookmarkKey), folder.startAccessingSecurityScopedResource() {
+            openedFolders[bookmarkKey] = folder
         }
     }
 
     // MARK: - Folder configuration
 
+    /// Download folder: files downloaded from servers.
     static func setFolder(_ url: URL, for type: MediaType) {
-        if let bookmark = try? url.bookmarkData(options: .withSecurityScope) {
-            UserDefaults.standard.set(bookmark, forKey: SettingsKeys.downloadFolderBookmark(type))
-            UserDefaults.standard.set(url.path, forKey: SettingsKeys.downloadFolderPath(type))
-        }
-        shared.refreshFolderAccess(for: type)
+        saveBookmark(for: url, bookmarkKey: SettingsKeys.downloadFolderBookmark(type), pathKey: SettingsKeys.downloadFolderPath(type))
     }
 
     static func folderPath(for type: MediaType) -> String? {
@@ -130,24 +103,12 @@ final class DownloadManager {
     }
 
     static func resolvedFolder(for type: MediaType) -> URL? {
-        guard let bookmark = UserDefaults.standard.data(forKey: SettingsKeys.downloadFolderBookmark(type)) else {
-            return nil
-        }
-        var stale = false
-        return try? URL(
-            resolvingBookmarkData: bookmark,
-            options: .withSecurityScope,
-            relativeTo: nil,
-            bookmarkDataIsStale: &stale
-        )
+        resolveBookmark(SettingsKeys.downloadFolderBookmark(type))
     }
 
+    /// Library folder: the user's own media, scanned by LocalLibraryScanner.
     static func setLibraryFolder(_ url: URL, for type: MediaType) {
-        if let bookmark = try? url.bookmarkData(options: .withSecurityScope) {
-            UserDefaults.standard.set(bookmark, forKey: SettingsKeys.libraryFolderBookmark(type))
-            UserDefaults.standard.set(url.path, forKey: SettingsKeys.libraryFolderPath(type))
-        }
-        shared.refreshLibraryFolderAccess(for: type)
+        saveBookmark(for: url, bookmarkKey: SettingsKeys.libraryFolderBookmark(type), pathKey: SettingsKeys.libraryFolderPath(type))
     }
 
     static func libraryFolderPath(for type: MediaType) -> String? {
@@ -155,9 +116,19 @@ final class DownloadManager {
     }
 
     static func resolvedLibraryFolder(for type: MediaType) -> URL? {
-        guard let bookmark = UserDefaults.standard.data(forKey: SettingsKeys.libraryFolderBookmark(type)) else {
-            return nil
+        resolveBookmark(SettingsKeys.libraryFolderBookmark(type))
+    }
+
+    private static func saveBookmark(for url: URL, bookmarkKey: String, pathKey: String) {
+        if let bookmark = try? url.bookmarkData(options: .withSecurityScope) {
+            UserDefaults.standard.set(bookmark, forKey: bookmarkKey)
+            UserDefaults.standard.set(url.path, forKey: pathKey)
         }
+        shared.refreshAccess(bookmarkKey: bookmarkKey)
+    }
+
+    private static func resolveBookmark(_ key: String) -> URL? {
+        guard let bookmark = UserDefaults.standard.data(forKey: key) else { return nil }
         var stale = false
         return try? URL(
             resolvingBookmarkData: bookmark,
@@ -198,8 +169,7 @@ final class DownloadManager {
     }
 
     static func libraryIndexedEntries(for type: MediaType) -> [DownloadIndexEntry] {
-        guard let folder = resolvedLibraryFolder(for: type) else { return [] }
-        return Array(readIndexFromFolder(folder).values)
+        entries(in: resolvedLibraryFolder(for: type))
     }
 
     static func mergeLibraryIndex(_ entries: [DownloadIndexEntry], for type: MediaType) {
@@ -212,12 +182,7 @@ final class DownloadManager {
     }
 
     func localLibraryURL(for item: MediaItem) -> URL? {
-        guard let folder = Self.resolvedLibraryFolder(for: item.type) else { return nil }
-        let index = Self.readIndexFromFolder(folder)
-        guard let entry = index[item.id], let filename = entry.filename else { return nil }
-        let fileURL = folder.appending(path: filename)
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
-        return fileURL
+        Self.indexedFileURL(for: item, in: Self.resolvedLibraryFolder(for: item.type))
     }
 
     static func limitBytes(for type: MediaType) -> Int64 {
@@ -272,24 +237,8 @@ final class DownloadManager {
         }
         writeIndex(index, to: folder)
 
-        switch type {
-        case .movies: shared.downloadedMovieIDs = []
-        case .tvShows: shared.downloadedTVShowIDs = []
-        case .music: shared.downloadedMusicIDs = []
-        }
-
-        if let enumerator = FileManager.default.enumerator(
-            at: folder,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) {
-            for case let fileURL as URL in enumerator {
-                let ext = fileURL.pathExtension.lowercased()
-                if ext == "jpg" || ext == "jpeg" || ext == "png" {
-                    try? FileManager.default.removeItem(at: fileURL)
-                }
-            }
-        }
+        shared.downloadedIDs[type] = []
+        removeArtwork(in: folder)
 
         if let enumerator = FileManager.default.enumerator(
             at: folder,
@@ -312,19 +261,20 @@ final class DownloadManager {
     
     static func clearDownloadedArtwork() {
         for type in MediaType.allCases {
-            guard let folder = resolvedFolder(for: type) else { continue }
-            if let enumerator = FileManager.default.enumerator(
-                at: folder,
-                includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
-            ) {
-                for case let fileURL as URL in enumerator {
-                    let ext = fileURL.pathExtension.lowercased()
-                    if ext == "jpg" || ext == "jpeg" || ext == "png" {
-                        try? FileManager.default.removeItem(at: fileURL)
-                    }
-                }
-            }
+            if let folder = resolvedFolder(for: type) { removeArtwork(in: folder) }
+        }
+    }
+
+    /// Deletes the poster images saved next to downloads.
+    private static func removeArtwork(in folder: URL) {
+        guard let enumerator = FileManager.default.enumerator(
+            at: folder,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        for case let fileURL as URL in enumerator
+        where ["jpg", "jpeg", "png"].contains(fileURL.pathExtension.lowercased()) {
+            try? FileManager.default.removeItem(at: fileURL)
         }
     }
 
@@ -349,8 +299,11 @@ final class DownloadManager {
     }
 
     static func indexedEntries(for type: MediaType) -> [DownloadIndexEntry] {
-        guard let folder = resolvedFolder(for: type) else { return [] }
-        return Array(readIndexFromFolder(folder).values)
+        entries(in: resolvedFolder(for: type))
+    }
+
+    private static func entries(in folder: URL?) -> [DownloadIndexEntry] {
+        folder.map { Array(readIndexFromFolder($0).values) } ?? []
     }
 
     func isDownloaded(_ item: MediaItem) -> Bool {
@@ -364,12 +317,15 @@ final class DownloadManager {
     }
 
     func localURL(for item: MediaItem) -> URL? {
-        guard let folder = Self.resolvedFolder(for: item.type) else { return nil }
-        let index = Self.readIndexFromFolder(folder)
-        guard let entry = index[item.id], let filename = entry.filename else { return nil }
+        Self.indexedFileURL(for: item, in: Self.resolvedFolder(for: item.type))
+    }
+
+    /// The indexed file for `item` in `folder`, if it still exists on disk.
+    private static func indexedFileURL(for item: MediaItem, in folder: URL?) -> URL? {
+        guard let folder,
+              let filename = readIndexFromFolder(folder)[item.id]?.filename else { return nil }
         let fileURL = folder.appending(path: filename)
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
-        return fileURL
+        return FileManager.default.fileExists(atPath: fileURL.path) ? fileURL : nil
     }
 
     func download(_ item: MediaItem, appState: AppState) {
@@ -472,12 +428,12 @@ final class DownloadManager {
         
         downloadingIDs.insert(item.id)
         downloadingItems.append(item)
-        DispatchQueue.main.async { self.downloadProgress[item.id] = 0.0 }
+        downloadProgress[item.id] = 0.0
         
         defer {
             downloadingIDs.remove(item.id)
             downloadingItems.removeAll { $0.id == item.id }
-            DispatchQueue.main.async { self.downloadProgress.removeValue(forKey: item.id) }
+            downloadProgress.removeValue(forKey: item.id)
         }
         
         do {
@@ -557,11 +513,7 @@ final class DownloadManager {
 
             Self.writeIndex(index, to: folder)
 
-            switch item.type {
-            case .movies: downloadedMovieIDs.insert(item.id)
-            case .tvShows: downloadedTVShowIDs.insert(item.id)
-            case .music: downloadedMusicIDs.insert(item.id)
-            }
+            downloadedIDs[item.type, default: []].insert(item.id)
 
             let currentFileURL = destination
             await downloadArtwork(for: item, fileURL: currentFileURL, destinationFolder: currentFileURL.deletingLastPathComponent())
@@ -679,7 +631,8 @@ final class DownloadManager {
         }
     }
 
-    private nonisolated static func sanitizePathComponent(_ s: String) -> String {
+    /// Makes a title safe to use as a file or folder name.
+    nonisolated static func sanitizePathComponent(_ s: String) -> String {
         var result = s.replacing("/", with: "-").replacing(":", with: "-")
         while result.hasPrefix(".") { result = String(result.dropFirst()) }
         return result.isEmpty ? "Unknown" : result
