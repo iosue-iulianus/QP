@@ -794,6 +794,7 @@ private struct MusicPlayerLayout: View {
     }
 }
 
+#if !SWIFT_PACKAGE // Previews need Xcode; SwiftPM builds skip them.
 #Preview("Music mini-player") {
     @Previewable @State var time = 83.0
     @Previewable @State var scrubbing = false
@@ -813,6 +814,7 @@ private struct MusicPlayerLayout: View {
     )
     .frame(width: 340, height: 660)
 }
+#endif
 
 // MARK: - Window pinning
 

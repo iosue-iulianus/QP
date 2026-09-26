@@ -44,9 +44,11 @@ struct PlaybackSettingsView: View {
     }
 }
 
+#if !SWIFT_PACKAGE // Previews need Xcode; SwiftPM builds skip them.
 #Preview("Playback") {
     PlaybackSettingsView()
         .environment(AppState())
         .frame(width: 520, height: 560)
 }
+#endif
 #endif

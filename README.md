@@ -6,10 +6,13 @@ This is a fork of [KuDoZ007/QP](https://github.com/KuDoZ007/QP) with the followi
 *   **Artwork loading:** Posters now load through a small `ArtworkImage` view. It keeps the "Cache Artwork Locally" setting, and it decodes and downsamples images off the main thread, which reduces memory use and scrolling hitches.
 *   **Cleanup:** Removed the unused `ActivitySection.swift`.
 *   **Secrets no longer committed:** `QuPi/Secrets.swift` is now ignored by Git (the upstream `.gitignore` pointed to the wrong path). You need to create it yourself before building; see below.
+*   **Builds without Xcode:** `./build.sh` builds and launches the app using only the Command Line Tools.
+
+See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ### Building this fork
 
-Requirements: macOS 26 or later and Xcode 26.4 or later (the SwiftVLC package requires Swift 6.3).
+Requirements: macOS 26 or later, plus either the Command Line Tools (`xcode-select --install`) or Xcode 26.4 or later. The SwiftVLC package requires Swift 6.3.
 
 1.  Create `QuPi/Secrets.swift` with your own credentials:
 
@@ -30,7 +33,9 @@ Requirements: macOS 26 or later and Xcode 26.4 or later (the SwiftVLC package re
     Trakt: register at https://trakt.tv/oauth/applications/new with redirect URI `qupi://trakt-auth`.
     Last.fm: register at https://www.last.fm/api/account/create with callback URL `qupi://lastfm-auth`.
     The placeholders are enough to build; scrobbling needs real values.
-2.  Open `QuPi.xcodeproj`, select your own development team under Signing & Capabilities, and run.
+2.  Build and launch:
+    *   **Without Xcode:** run `./build.sh`. It builds with SwiftPM, creates `dist/QuPi.app`, signs it and opens it. Use `./build.sh build` to build without launching. Without an Apple Development certificate the app is signed ad-hoc, so macOS asks again for Keychain access after each rebuild.
+    *   **With Xcode:** open `QuPi.xcodeproj`, select your own development team under Signing & Capabilities, and run.
 
 ---
 

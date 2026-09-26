@@ -29,8 +29,10 @@ struct SettingsView: View {
     }
 }
 
+#if !SWIFT_PACKAGE // Previews need Xcode; SwiftPM builds skip them.
 #Preview("Settings") {
     SettingsView()
         .environment(AppState())
 }
+#endif
 #endif
