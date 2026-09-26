@@ -39,6 +39,10 @@ struct AccountsSettingsView: View {
     @State private var plexSignInTask: Task<Void, Never>?
     @State private var traktSignInTask: Task<Void, Never>?
     @State private var lastfmSignInTask: Task<Void, Never>?
+    @State private var plexAccount: PlexClient.Account?
+    @State private var showingPlexSignOut = false
+    @State private var tmdbKeyDraft = UserDefaults.standard.string(forKey: SettingsKeys.tmdbAPIKey) ?? ""
+    @State private var tmdbKeyStatus: TMDbKeyStatus = .none
 
     var body: some View {
         Form {
@@ -60,12 +64,16 @@ struct AccountsSettingsView: View {
 
     private var plexSection: some View {
         Section("Plex") {
-            Button(pinCode.isEmpty ? "Sign In with Plex…" : "Waiting for link…") {
-                signInWithPlex()
-            }
-            .disabled(plexSignInTask != nil)
-            if !pinCode.isEmpty {
-                CopyableCodeRow(code: pinCode, destination: "plex.tv/link")
+            if plexAccountToken.isEmpty {
+                Button(pinCode.isEmpty ? "Sign In with Plex…" : "Waiting for link…") {
+                    signInWithPlex()
+                }
+                .disabled(plexSignInTask != nil)
+                if !pinCode.isEmpty {
+                    CopyableCodeRow(code: pinCode, destination: "plex.tv/link")
+                }
+            } else {
+                plexAccountRow
             }
             statusText(plexStatus)
             ForEach(plexServers) { server in
@@ -75,6 +83,70 @@ struct AccountsSettingsView: View {
                 plexAdvancedContent
             }
         }
+        .task(id: plexAccountToken) { await loadPlexAccount() }
+        .confirmationDialog("Sign out of Plex?", isPresented: $showingPlexSignOut) {
+            Button("Sign Out", role: .destructive) { signOutOfPlex() }
+        } message: {
+            Text("Your Plex servers will be removed from QuPi. You can sign in again at any time.")
+        }
+    }
+
+    /// Shown in place of the sign-in button once a plex.tv account is linked.
+    private var plexAccountRow: some View {
+        LabeledContent {
+            HStack(spacing: 12) {
+                Label("Signed In", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Button("Sign Out…") { showingPlexSignOut = true }
+            }
+        } label: {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(plexAccount?.username ?? "Plex Account")
+                    if let email = plexAccount?.email {
+                        Text(email)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } icon: {
+                Image(systemName: "person.crop.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func loadPlexAccount() async {
+        guard !plexAccountToken.isEmpty else {
+            plexAccount = nil
+            return
+        }
+        do {
+            plexAccount = try await PlexClient.account(token: plexAccountToken)
+        } catch URLError.userAuthenticationRequired {
+            plexStatus = "Your Plex sign-in has expired. Sign out and sign in again."
+        } catch {
+            // Offline or plex.tv unreachable: keep the generic account label.
+        }
+    }
+
+    /// Forgets the plex.tv account and every server connected through it.
+    private func signOutOfPlex() {
+        plexSignInTask?.cancel()
+        for server in plexServers {
+            PlexServerStore.setToken(nil, for: server.id)
+        }
+        plexServers = []
+        plexServerTokens = [:]
+        plexServerStatuses = [:]
+        discoveredPlexServers = []
+        PlexServerStore.save([])
+        plexAccountToken = ""
+        KeychainStore.set(nil, for: KeychainKeys.plexAccountToken)
+        plexAccount = nil
+        plexStatus = ""
+        appState.plexServersChanged()
     }
 
     private func connectedPlexServerRow(_ server: PlexServer) -> some View {
@@ -446,12 +518,86 @@ struct AccountsSettingsView: View {
 
     // MARK: - TMDb
 
+    private enum TMDbKeyStatus {
+        case none, checking, valid, invalid, unreachable
+    }
+
     private var tmdbSection: some View {
         Section("The Movie Database") {
-            TextField("API Key (v3)", text: $tmdbAPIKey)
+            HStack {
+                TextField("API Key (v3)", text: $tmdbKeyDraft)
+                    .autocorrectionDisabled()
+                    .onSubmit { saveTMDbKey() }
+                Button("Save") { saveTMDbKey() }
+                    .disabled(tmdbKeyStatus == .checking || tmdbKeyDraft == tmdbAPIKey && tmdbKeyStatus != .invalid)
+            }
+            tmdbKeyStatusRow
             Text("Used to fetch posters and metadata when refreshing your Local Library. Get a free API key at themoviedb.org/settings/api.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+        }
+        .task { await checkSavedTMDbKey() }
+    }
+
+    @ViewBuilder
+    private var tmdbKeyStatusRow: some View {
+        switch tmdbKeyStatus {
+        case .none:
+            EmptyView()
+        case .checking:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Checking key…").foregroundStyle(.secondary)
+            }
+            .font(.callout)
+        case .valid:
+            Label("Key saved and verified", systemImage: "checkmark.circle.fill")
+                .font(.callout)
+                .foregroundStyle(.green)
+        case .invalid:
+            Label("TMDb rejected this key. Check it and try again.", systemImage: "xmark.circle.fill")
+                .font(.callout)
+                .foregroundStyle(.red)
+        case .unreachable:
+            Label("Key saved, but TMDb couldn't be reached to verify it.", systemImage: "exclamationmark.triangle.fill")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Verifies the draft key with TMDb before saving it. A rejected key is
+    /// not saved; an unverifiable one (offline) is saved anyway.
+    private func saveTMDbKey() {
+        let key = tmdbKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        tmdbKeyDraft = key
+        guard !key.isEmpty else {
+            tmdbAPIKey = ""
+            tmdbKeyStatus = .none
+            return
+        }
+        tmdbKeyStatus = .checking
+        Task {
+            let result = await TMDbClient(apiKey: key).checkKey()
+            switch result {
+            case .valid:
+                tmdbAPIKey = key
+                tmdbKeyStatus = .valid
+            case .invalid:
+                tmdbKeyStatus = .invalid
+            case .unreachable:
+                tmdbAPIKey = key
+                tmdbKeyStatus = .unreachable
+            }
+        }
+    }
+
+    private func checkSavedTMDbKey() async {
+        guard !tmdbAPIKey.isEmpty else { return }
+        tmdbKeyStatus = .checking
+        tmdbKeyStatus = switch await TMDbClient(apiKey: tmdbAPIKey).checkKey() {
+        case .valid: .valid
+        case .invalid: .invalid
+        case .unreachable: .unreachable
         }
     }
 

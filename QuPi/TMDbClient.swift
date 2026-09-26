@@ -118,6 +118,26 @@ struct TMDbClient {
 
     // MARK: - Network
 
+    // MARK: - Key check
+
+    enum KeyCheck {
+        case valid, invalid, unreachable
+    }
+
+    /// Asks TMDb whether the API key is accepted, distinguishing a rejected
+    /// key from a network problem.
+    func checkKey() async -> KeyCheck {
+        var components = URLComponents(url: Self.baseURL.appending(path: "/configuration"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "api_key", value: apiKey)]
+        guard let (_, response) = try? await URLSession.shared.data(from: components.url!),
+              let status = (response as? HTTPURLResponse)?.statusCode else { return .unreachable }
+        switch status {
+        case 200: return .valid
+        case 400..<500: return .invalid
+        default: return .unreachable
+        }
+    }
+
     private func get(path: String, query: [URLQueryItem]) async throws -> Data {
         var components = URLComponents(url: Self.baseURL.appending(path: path), resolvingAgainstBaseURL: false)!
         components.queryItems = query
