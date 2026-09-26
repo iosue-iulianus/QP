@@ -99,7 +99,11 @@ struct MenuBarContentView: View {
         // True whenever the menu's window is active, i.e. each time the menu
         // opens. (onAppear can fire only once for a MenuBarExtra window.)
         .onChange(of: appearsActive, initial: true) { _, active in
-            if active { appState.menuDidOpen() }
+            guard active else { return }
+            appState.menuDidOpen()
+            // Ready to type as soon as the menu opens. Set on the next turn
+            // of the run loop, once the menu's window is key.
+            Task { searchFocused = true }
         }
         .onChange(of: searchFocused) {
             if searchFocused {

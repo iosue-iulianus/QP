@@ -7,6 +7,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- The search field is focused when the menu opens, so you can start typing straight away.
 - Opening the menu refreshes it in the background: Continue Watching every time, and each loaded library section (with its open season or episode lists) at most every two minutes, so things watched on another device or added to the server show up without restarting QuPi. Skipped while searching.
 - Movies and episodes resume where you stopped, in QuPi or on any other Plex device (whichever was more recent). Before, only music resumed and videos always started from the beginning. To start over instead, Control-click the poster and choose Play from Beginning.
 - Continue Watching (renamed from "Continue…") now includes Plex's own Continue Watching list (movies and episodes in progress and the next episode of shows you're watching, from any Plex app), merged with what you've played in QuPi and ordered by when each was last played. Anything finished or removed from Continue Watching in Plex drops off here too. Episodes show their show's full-size poster and name, with the episode underneath. Only libraries selected in Settings > Libraries are included; servers without the Continue Watching hub use On Deck. It is on by default, first in the menu, open when the menu opens (it opens and closes independently of the other sections) and refreshed each time the menu opens.
