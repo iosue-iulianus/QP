@@ -1,14 +1,20 @@
 ## About this fork
 
-This is a fork of [KuDoZ007/QP](https://github.com/KuDoZ007/QP). The main differences:
+This is a fork of [KuDoZ007/QP](https://github.com/KuDoZ007/QP), combining work from [p3rception/QP](https://github.com/p3rception/QP) and [iosue-iulianus/QP](https://github.com/iosue-iulianus/QP). The main differences:
 
 *   **Runs on macOS 26 (Tahoe).** Upstream needs macOS 27 because it used two SwiftUI APIs that only exist there (`AsyncImage(request:)` and `.asyncImageURLSession(_:)`). Posters now load through a small `ArtworkImage` view that works on both.
 *   **Your libraries, your names.** The menu shows one section per server library, named as on the server (for example Movies, Shows and YouTube), instead of fixed Movies / TV Shows / Music sections. Choose which libraries appear in Settings > Libraries. "TV Shows" is called "Shows" throughout.
+*   **Continue Watching.** Plex's own Continue Watching list (from any device) merged with what you've played in QuPi, at the top of the menu and open by default. Episodes show their show's poster and name, with the episode underneath.
+*   **Picks up where you left off.** Movies and episodes resume from where you stopped, in QuPi or on any other Plex device. Control-click a poster for Play from Beginning. (Upstream only resumed music.)
+*   **Watched at a glance.** Checkmarks on watched movies and episodes and on fully watched shows, and progress bars on anything in progress.
+*   **Your menu, your order.** Drag the menu's sections into any order in Settings > Libraries.
 *   **Sorting.** Movies and shows are sorted by date added, newest first, by default. A small sort button on each open section changes the field and order without opening Settings.
 *   **Easier sign-in.** Jellyfin Quick Connect (approve a code from another signed-in device, no password). Server addresses work without `http://` or `https://`; the app tries HTTPS first, then HTTP. The TMDb API key field checks the key as you type.
 *   **Security.** The Plex token is never sent over plain HTTP to a remote address, Plex tokens are no longer saved in plain text inside poster URLs, the TMDb key is stored in the Keychain, and `Secrets.swift` is no longer committed (the upstream `.gitignore` pointed to the wrong path).
 *   **Plex away from home.** All of a server's addresses are checked at once and the fastest is used, so switching to a hotspot or VPN connects in seconds instead of minutes.
-*   **Search and accounts.** Search ignores spaces, punctuation and accents ("madmen" finds "Mad Men"). Settings > Accounts shows the signed-in Plex account with a Sign Out button.
+*   **Search.** The search field is focused as soon as the menu opens. Search ignores spaces, punctuation and accents ("madmen" finds "Mad Men"), and only sections with matches are shown.
+*   **Always current.** Opening the menu refreshes it in the background, so things watched on another device or added to the server show up without restarting QuPi.
+*   **Native Settings.** Settings follow the macOS 26 System Settings style, with an explanation under each option, an adjustable window height, the signed-in Plex account with Sign Out, and a confirmation before deleting downloads.
 *   **Faster.** Server settings and download indexes stay in memory instead of being re-read from the Keychain and disk on every redraw, sources load in parallel, and a Plex address that works is remembered.
 *   **Fixes.** Offline Mode works with downloads alone, and Plex errors are readable.
 *   **Leaner.** The unfinished transcoding feature and other unused code are removed (about 1,450 lines), so FFmpeg is no longer needed.
