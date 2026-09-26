@@ -393,6 +393,23 @@ func isAVFoundationPlayable(_ url: URL) -> Bool {
     return supported.contains(ext)
 }
 
+/// Lowercases, removes accents, and drops everything but letters and digits,
+/// so search ignores spacing and punctuation ("madmen" finds "Mad Men",
+/// "spiderman" finds "Spider-Man", "amelie" finds "Amélie").
+func searchKey(_ text: String) -> String {
+    let folded = text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
+    return String(String.UnicodeScalarView(folded.unicodeScalars.filter(CharacterSet.alphanumerics.contains)))
+}
+
+/// Whether `text` matches a search `query`, ignoring case, accents,
+/// spacing and punctuation. A query with no letters or digits falls back
+/// to a plain case-insensitive match.
+func searchMatches(_ text: String, query: String) -> Bool {
+    let key = searchKey(query)
+    guard !key.isEmpty else { return text.localizedCaseInsensitiveContains(query) }
+    return searchKey(text).contains(key)
+}
+
 /// Strips sequel numbering and subtitles ("Movie 2", "Movie II: Subtitle")
 /// so franchise entries compare equal for In Sequence auto-continue.
 func franchiseBaseTitle(_ title: String) -> String {

@@ -467,8 +467,8 @@ final class AppState {
         var result: [MediaItem]
         if isSearchActive, !query.isEmpty {
             var merged = items.filter { item in
-                item.title.localizedCaseInsensitiveContains(query)
-                    || (item.subtitle?.localizedCaseInsensitiveContains(query) ?? false)
+                searchMatches(item.title, query: query)
+                    || item.subtitle.map { searchMatches($0, query: query) } ?? false
             }
             for deep in deepSearchItems[section] ?? [] where !merged.contains(where: { $0.id == deep.id }) {
                 merged.append(deep)
