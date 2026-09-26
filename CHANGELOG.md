@@ -18,6 +18,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Removed
 
+- Post-download transcoding (`VideoTranscoder.swift`, `TranscodeSettings.swift`, the Converting section and the convert prompt). Its settings were already commented out upstream, so it never ran on a fresh install. FFmpeg is no longer needed.
 - `ActivitySection.swift`, which was not used anywhere.
 - `QuPi/Secrets.swift` from the repository. Create it locally before building; the README has a template.
 

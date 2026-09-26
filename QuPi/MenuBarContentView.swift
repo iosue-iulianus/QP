@@ -26,10 +26,7 @@ struct MenuBarContentView: View {
             header
             Divider()
 
-            // 1. Downloading Section (excludes items currently in Converting)
-            let activeDownloads = downloadManager.downloadingItems.filter { downloadingItem in
-                !downloadManager.transcodeQueue.contains(where: { $0.id == downloadingItem.id })
-            }
+            let activeDownloads = downloadManager.downloadingItems
             if !activeDownloads.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack {
@@ -43,46 +40,6 @@ struct MenuBarContentView: View {
                     
                     MediaCarouselView(
                         items: activeDownloads,
-                        selectedID: nil,
-                        isCompact: true,
-                        onSelect: { item in
-                            if !item.kind.isExpandable {
-                                openWindow(id: item.type == .music ? "music-player" : "video-player", value: item)
-                                NSApplication.shared.activate()
-                                dismiss()
-                            }
-                        }
-                    )
-                    .padding(.bottom, 10)
-                }
-                Divider()
-            }
-
-            // 2. Converting Section (uses compact MediaCarouselView matching Downloading & Simple Visuals)
-            if !downloadManager.transcodeQueue.isEmpty {
-                VStack(alignment: .leading, spacing: 0) {
-                    HStack {
-                        Image(systemName: "gearshape.2")
-                            .frame(width: 20)
-                        Text("Converting")
-                        Spacer()
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    
-                    let convertingItems = downloadManager.transcodeQueue.map { entry in
-                        MediaItem(
-                            id: entry.id,
-                            source: .local,
-                            type: entry.mediaType,
-                            kind: entry.mediaType == .tvShows ? .episode : .movie,
-                            title: entry.title,
-                            posterURL: entry.posterURL
-                        )
-                    }
-                    
-                    MediaCarouselView(
-                        items: convertingItems,
                         selectedID: nil,
                         isCompact: true,
                         onSelect: { item in

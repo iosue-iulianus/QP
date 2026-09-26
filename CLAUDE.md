@@ -71,8 +71,6 @@ MediaType (movies / tvShows / music)
 
 `DownloadManager.localURL(for:)` is checked first by `AppState.streamURL`, so downloaded items play from disk.
 
-Post-download transcoding (`VideoTranscoder`, `TranscodeSettings`) exists, but its settings UI in `DataSettingsView` is commented out, so it only runs if thresholds were set earlier.
-
 ### Playback
 
 `isAVFoundationPlayable(_:)` picks the engine: `AVPlayer` for network URLs and mp4/mov/m4v/common audio files, `VLCPlayerBridge` (SwiftVLC, libVLC linked statically) for everything else, such as mkv and avi.

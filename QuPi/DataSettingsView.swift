@@ -8,16 +8,6 @@ struct DataSettingsView: View {
     @AppStorage(SettingsKeys.downloadIndicatorsEnabled) private var downloadIndicators = false
     @AppStorage(SettingsKeys.cacheArtwork) private var cacheArtwork = true
 
-    // Storage Optimisation — raw strings held in @State so changes only take
-    // effect (and are written to UserDefaults) when the view disappears.
-    @State private var transcodeModeRaw  = UserDefaults.standard.string(forKey: "transcodeMode") ?? "Automatic"
-    @State private var movieThresholdRaw = UserDefaults.standard.string(forKey: SettingsKeys.transcodeThreshold(.movies)) ?? TranscodeThreshold.disabled.rawValue
-    @State private var moviePresetRaw    = UserDefaults.standard.string(forKey: SettingsKeys.transcodePreset(.movies)) ?? ""
-    @State private var tvThresholdRaw    = UserDefaults.standard.string(forKey: SettingsKeys.transcodeThreshold(.tvShows)) ?? TranscodeThreshold.disabled.rawValue
-    @State private var tvPresetRaw       = UserDefaults.standard.string(forKey: SettingsKeys.transcodePreset(.tvShows)) ?? ""
-    @State private var queueOnCloseRaw   = UserDefaults.standard.string(forKey: SettingsKeys.queueOnClose) ?? QueueOnCloseBehavior.abandonQueue.rawValue
-    @State private var storageSettingsChanged = false
-
     // Refresh trigger for folder paths and usage after choosing folders.
     @State private var folderRefresh = 0
     @State private var cacheSizeDescription = ""
@@ -39,43 +29,6 @@ struct DataSettingsView: View {
             } header: {
                 SectionInfoHeader(title: "Downloads", info: "With downloads enabled, playable items in the dropdown get a small download button. Use the checkboxes to also show the download button at higher levels — tapping a series or album downloads everything inside it. Each media type saves into its own folder, capped at its storage amount.")
             }
-/*
-            Section {
-                Picker("Transcoding / Converting", selection: $transcodeModeRaw) {
-                    Text("Disabled").tag("Disabled")
-                    Text("Automatic").tag("Automatic")
-                    Text("Prompted").tag("Prompted")
-                }
-                .pickerStyle(.segmented)
-                
-                transcodeRow(
-                    label: "Movies",
-                    thresholdOptions: TranscodeThreshold.movieOptions,
-                    thresholdRaw: $movieThresholdRaw,
-                    presetRaw: $moviePresetRaw
-                )
-                .disabled(transcodeModeRaw == "Disabled")
-                
-                transcodeRow(
-                    label: "TV Shows",
-                    thresholdOptions: TranscodeThreshold.tvOptions,
-                    thresholdRaw: $tvThresholdRaw,
-                    presetRaw: $tvPresetRaw
-                )
-                .disabled(transcodeModeRaw == "Disabled")
-                
-                Picker("Queue On Close", selection: $queueOnCloseRaw) {
-                    ForEach(QueueOnCloseBehavior.allCases) { behavior in
-                        Text(behavior.label).tag(behavior.rawValue)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .disabled(transcodeModeRaw == "Disabled")
-            } header: {
-                SectionInfoHeader(title: "Storage Optimisation", info: "Files above the size threshold are re-encoded after download using Apple Silicon's HEVC hardware encoder, then replace the original. The encoder never upscales beyond the source resolution. Queue On Close controls what happens to any active conversion when you quit: Abandon Queue cancels all transcodes and keeps the original files; Keep Queue saves the list and resumes on next launch. Changes take effect when you close Settings — any active conversion restarts with the new settings.")
-            }
-            .disabled(!downloadsEnabled)
-*/
             Section {
                 Toggle("Cache Artwork Locally", isOn: $cacheArtwork)
                 HStack {
@@ -95,23 +48,6 @@ struct DataSettingsView: View {
         }
         .formStyle(.grouped)
         .task { updateCacheSize() }
-        .onChange(of: transcodeModeRaw) { storageSettingsChanged = true }
-        .onChange(of: movieThresholdRaw) { storageSettingsChanged = true }
-        .onChange(of: moviePresetRaw) { storageSettingsChanged = true }
-        .onChange(of: tvThresholdRaw) { storageSettingsChanged = true }
-        .onChange(of: tvPresetRaw) { storageSettingsChanged = true }
-        .onChange(of: queueOnCloseRaw) { storageSettingsChanged = true }
-        .onDisappear {
-            guard storageSettingsChanged else { return }
-            UserDefaults.standard.set(transcodeModeRaw,  forKey: "transcodeMode")
-            UserDefaults.standard.set(movieThresholdRaw, forKey: SettingsKeys.transcodeThreshold(.movies))
-            UserDefaults.standard.set(moviePresetRaw,    forKey: SettingsKeys.transcodePreset(.movies))
-            UserDefaults.standard.set(tvThresholdRaw,    forKey: SettingsKeys.transcodeThreshold(.tvShows))
-            UserDefaults.standard.set(tvPresetRaw,       forKey: SettingsKeys.transcodePreset(.tvShows))
-            UserDefaults.standard.set(queueOnCloseRaw,   forKey: SettingsKeys.queueOnClose)
-            storageSettingsChanged = false
-            DownloadManager.shared.applyStorageOptimisationSettings()
-        }
     }
 
     private func downloadRow(for type: MediaType) -> some View {
@@ -234,48 +170,5 @@ struct DataSettingsView: View {
             ? ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
             : "Empty"
     }
-
-    // MARK: - Storage Optimisation helpers
-/*
-    private func transcodeRow(
-        label: String,
-        thresholdOptions: [TranscodeThreshold],
-        thresholdRaw: Binding<String>,
-        presetRaw: Binding<String>
-    ) -> some View {
-        let threshold = Binding<TranscodeThreshold>(
-            get: { TranscodeThreshold(rawValue: thresholdRaw.wrappedValue) ?? .disabled },
-            set: { thresholdRaw.wrappedValue = $0.rawValue }
-        )
-        let preset = Binding<TranscodePreset?>(
-            get: { TranscodePreset(rawValue: presetRaw.wrappedValue) },
-            set: { presetRaw.wrappedValue = $0?.rawValue ?? "" }
-        )
-        return LabeledContent(label) {
-            HStack {
-                Picker("Threshold", selection: threshold) {
-                    Text(TranscodeThreshold.disabled.label).tag(TranscodeThreshold.disabled)
-                    Divider()
-                    ForEach(thresholdOptions.filter { $0 != .disabled }) { option in
-                        Text(option.label).tag(option)
-                    }
-                }
-                .labelsHidden()
-                .fixedSize()
-
-                Picker("Preset", selection: preset) {
-                    Text("Convert To").tag(nil as TranscodePreset?)
-                    Divider()
-                    ForEach(TranscodePreset.allCases) { p in
-                        Text(p.displayName).tag(p as TranscodePreset?)
-                    }
-                }
-                .labelsHidden()
-                .fixedSize()
-                .disabled(threshold.wrappedValue == .disabled)
-            }
-        }
-    }
- */
 }
 #endif // os(macOS)

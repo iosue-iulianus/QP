@@ -476,20 +476,9 @@ nonisolated enum SettingsKeys {
     static let downloadIndicatorsEnabled = "downloadIndicatorsEnabled"
     static let tmdbAPIKey = "tmdbAPIKey"
 
-    static func transcodeThreshold(_ type: MediaType) -> String {
-        "transcodeThreshold_\(type.rawValue)"
-    }
-
-    static func transcodePreset(_ type: MediaType) -> String {
-        "transcodePreset_\(type.rawValue)"
-    }
-
     static let movieLocalFirst = "movieLocalFirst"
     static let tvLocalFirst = "tvLocalFirst"
     static let musicLocalFirst = "musicLocalFirst"
-
-    static let queueOnClose = "queueOnClose"
-    static let savedTranscodeQueue = "savedTranscodeQueue"
 }
 
 /// Keychain item names for secrets.

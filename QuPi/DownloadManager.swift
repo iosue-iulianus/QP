@@ -10,35 +10,6 @@ struct DownloadIndexEntry: Codable {
     let filename: String?
 }
 
-/// A request from DownloadManager for the UI to answer before transcoding.
-struct TranscodePromptRequest {
-    let item: MediaItem
-    let preset: TranscodePreset?
-    let continuation: CheckedContinuation<TranscodePreset?, Never>?
-}
-
-/// Limits concurrent hardware HEVC encode sessions to the number of dedicated media
-/// engines on this device. Callers `try await waitForSlot()` before starting a transcode
-/// and `await release()` when done. Throws `CancellationError` while waiting if the
-/// calling task is cancelled.
-private actor TranscodePool {
-    private var active: Int = 0
-    private let capacity: Int
-
-    init(capacity: Int) { self.capacity = max(1, capacity) }
-
-    func waitForSlot() async throws {
-        while active >= capacity {
-            try await Task.sleep(for: .milliseconds(200))
-        }
-        active += 1
-    }
-
-    func release() {
-        active = max(0, active - 1)
-    }
-}
-
 /// Downloads media to the per-type folders chosen in Settings → Data,
 /// enforcing the per-type storage allocation. Folder access persists across
 /// launches via security-scoped bookmarks. A JSON index sidecar
@@ -56,14 +27,6 @@ final class DownloadManager {
     
     /// Tracks download progress (0.0 to 1.0) for active downloads by item ID.
     var downloadProgress: [String: Double] = [:]
-    
-    /// Holds items waiting for the user to respond to the Convert prompt
-    var pendingPrompts: [String: TranscodePromptRequest] = [:]
-    
-    var transcodeQueue: [TranscodeQueueEntry] = []
-    /// Active transcode tasks keyed by item ID; supports concurrent cancellation.
-    private var activeTasks: [String: Task<URL?, Never>] = [:]
-    private let transcodePool = TranscodePool(capacity: VideoTranscoder.hardwareEncodeEngineCount())
 
     /// In-memory caches of downloaded item IDs per type, populated on launch and
     /// updated on each download completion. Used by sortedItems for O(1) Local First
@@ -71,52 +34,6 @@ final class DownloadManager {
     var downloadedMovieIDs: Set<String> = []
     var downloadedTVShowIDs: Set<String> = []
     var downloadedMusicIDs: Set<String> = []
-
-    /// Returns active download or transcode progress (0.0 to 1.0) for an item ID.
-        func activeProgress(for itemID: String) -> Double? {
-            // Transcode progress takes precedence
-            if let entry = transcodeQueue.first(where: { $0.id == itemID }) {
-                return Double(entry.progress)
-            }
-            if let progress = downloadProgress[itemID] {
-                return progress
-            }
-            return nil
-        }
-
-    /// Evaluates whether an already downloaded item exceeds the Transcode threshold
-    /// and the user has Prompted mode enabled.
-    func isEligibleForPromptedTranscode(_ item: MediaItem) -> Bool {
-        guard isDownloaded(item), item.type != .music else { return false }
-        
-        let modeRaw = UserDefaults.standard.string(forKey: "transcodeMode") ?? "Automatic"
-        guard modeRaw == "Prompted" else { return false }
-        
-        let thresholdRaw = UserDefaults.standard.string(forKey: SettingsKeys.transcodeThreshold(item.type)) ?? ""
-        guard let threshold = TranscodeThreshold(rawValue: thresholdRaw),
-              threshold != .disabled,
-              let thresholdBytes = threshold.bytes else { return false }
-        
-        guard let url = localURL(for: item),
-              let fileSize = try? url.resourceValues(forKeys: [.totalFileSizeKey]).totalFileSize else { return false }
-              
-        return Int64(fileSize) >= thresholdBytes
-    }
-
-    /// Resolves a pending transcode prompt with the user's decision.
-    func resolvePrompt(for itemID: String, convert: Bool, preset: TranscodePreset?) {
-        if let prompt = pendingPrompts.removeValue(forKey: itemID) {
-            if let continuation = prompt.continuation {
-                // Resume the suspended auto-download pipeline
-                continuation.resume(returning: convert ? preset : nil)
-            } else if convert, let preset = preset {
-                // Manually trigger a transcode for an already downloaded file
-                Task {
-                    await forceTranscode(item: prompt.item, preset: preset)
-                }
-            }
-        }
-    }
 
     // MARK: - Init / folder lifetime access
 
@@ -129,31 +46,7 @@ final class DownloadManager {
             refreshLibraryFolderAccess(for: type)
         }
         cleanUpOrphans()
-        cleanUpTranscodeTemps()
         populateDownloadedIDCache()
-        restorePendingTranscodes()
-        observeTermination()
-    }
-
-    private func observeTermination() {
-        NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.handleAppTermination()
-        }
-    }
-
-    private func handleAppTermination() {
-        let behaviorRaw = UserDefaults.standard.string(forKey: SettingsKeys.queueOnClose)
-            ?? QueueOnCloseBehavior.abandonQueue.rawValue
-        guard QueueOnCloseBehavior(rawValue: behaviorRaw) == .keepQueue,
-              !transcodeQueue.isEmpty else { return }
-        let pending = transcodeQueue.map { SavedPendingTranscode(itemID: $0.id, mediaType: $0.mediaType) }
-        if let data = try? JSONEncoder().encode(pending) {
-            UserDefaults.standard.set(data, forKey: SettingsKeys.savedTranscodeQueue)
-        }
     }
 
     private func populateDownloadedIDCache() {
@@ -173,48 +66,6 @@ final class DownloadManager {
         case .movies: downloadedMovieIDs = ids
         case .tvShows: downloadedTVShowIDs = ids
         case .music: downloadedMusicIDs = ids
-        }
-    }
-
-    private func cleanUpTranscodeTemps() {
-        for type in MediaType.allCases {
-            guard let folder = Self.resolvedFolder(for: type),
-                  let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil) else { continue }
-            for case let url as URL in enumerator where url.lastPathComponent.hasSuffix(".transcoding.tmp") {
-                try? FileManager.default.removeItem(at: url)
-            }
-        }
-    }
-
-    private func restorePendingTranscodes() {
-        guard let data = UserDefaults.standard.data(forKey: SettingsKeys.savedTranscodeQueue),
-              let pending = try? JSONDecoder().decode([SavedPendingTranscode].self, from: data),
-              !pending.isEmpty else { return }
-        UserDefaults.standard.removeObject(forKey: SettingsKeys.savedTranscodeQueue)
-        // Launch all items concurrently; TranscodePool limits actual encode concurrency.
-        for entry in pending {
-            guard let folder = Self.resolvedFolder(for: entry.mediaType) else { continue }
-            let index = Self.readIndexFromFolder(folder)
-            guard let indexEntry = index[entry.itemID],
-                  let filename = indexEntry.filename else { continue }
-            let fileURL = folder.appending(path: filename)
-            guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
-
-            let task = Task<URL?, Never> { [weak self] in
-                await self?.maybeTranscode(item: indexEntry.item, fileURL: fileURL, folder: folder)
-            }
-            activeTasks[entry.itemID] = task
-
-            let itemID = entry.itemID
-            Task { [weak self] in
-                if let url = await task.value {
-                    let newRelative = String(url.path.dropFirst(folder.path.count + 1))
-                    var updatedIndex = Self.readIndexFromFolder(folder)
-                    updatedIndex[itemID] = DownloadIndexEntry(item: indexEntry.item, filename: newRelative)
-                    Self.writeIndex(updatedIndex, to: folder)
-                }
-                self?.activeTasks.removeValue(forKey: itemID)
-            }
         }
     }
 
@@ -713,22 +564,7 @@ final class DownloadManager {
             case .music: downloadedMusicIDs.insert(item.id)
             }
 
-            var currentFileURL = destination
-            if item.type != .music {
-                let task = Task<URL?, Never> {
-                    await self.maybeTranscode(item: item, fileURL: destination, folder: folder)
-                }
-                activeTasks[item.id] = task
-                if let transcodedURL = await task.value {
-                    currentFileURL = transcodedURL
-                    let newRelative = String(transcodedURL.path.dropFirst(folder.path.count + 1))
-                    var updatedIndex = Self.readIndexFromFolder(folder)
-                    updatedIndex[item.id] = DownloadIndexEntry(item: item, filename: newRelative)
-                    Self.writeIndex(updatedIndex, to: folder)
-                }
-                activeTasks.removeValue(forKey: item.id)
-            }
-
+            let currentFileURL = destination
             await downloadArtwork(for: item, fileURL: currentFileURL, destinationFolder: currentFileURL.deletingLastPathComponent())
 
             if item.kind == .episode {
@@ -939,148 +775,6 @@ final class DownloadManager {
         alert.alertStyle = .warning
         NSApplication.shared.activate()
         alert.runModal()
-    }
-
-    // MARK: - Post-download transcoding
-
-    private func maybeTranscode(item: MediaItem, fileURL: URL, folder: URL) async -> URL? {
-        let modeRaw = UserDefaults.standard.string(forKey: "transcodeMode") ?? "Automatic"
-        if modeRaw == "Disabled" { return nil }
-
-        let thresholdRaw = UserDefaults.standard.string(forKey: SettingsKeys.transcodeThreshold(item.type)) ?? ""
-        let presetRaw = UserDefaults.standard.string(forKey: SettingsKeys.transcodePreset(item.type)) ?? ""
-
-        guard let threshold = TranscodeThreshold(rawValue: thresholdRaw),
-              threshold != .disabled,
-              let thresholdBytes = threshold.bytes else { return nil }
-
-        guard let fileSize = try? fileURL.resourceValues(forKeys: [.totalFileSizeKey]).totalFileSize,
-              Int64(fileSize) >= thresholdBytes else { return nil }
-
-        var finalPreset: TranscodePreset? = TranscodePreset(rawValue: presetRaw)
-
-        if modeRaw == "Prompted" {
-            let userSelectedPreset = await withCheckedContinuation { continuation in
-                let request = TranscodePromptRequest(item: item, preset: finalPreset, continuation: continuation)
-                DispatchQueue.main.async {
-                    self.pendingPrompts[item.id] = request
-                }
-            }
-            guard let selected = userSelectedPreset else { return nil }
-            finalPreset = selected
-        }
-
-        guard let preset = finalPreset else { return nil }
-
-        // Wait for a hardware encoder slot. Returns early if cancelled while queued.
-        do {
-            try await transcodePool.waitForSlot()
-        } catch {
-            return nil
-        }
-
-        // Show in the Converting UI now that encoding is about to begin.
-        transcodeQueue.append(TranscodeQueueEntry(id: item.id, title: item.title, posterURL: item.posterURL, mediaType: item.type, progress: 0))
-
-        let pool = transcodePool
-        let itemID = item.id
-        defer {
-            Task { await pool.release() }
-            Task { @MainActor [weak self] in self?.transcodeQueue.removeAll { $0.id == itemID } }
-        }
-
-        do {
-            return try await VideoTranscoder.transcode(fileURL: fileURL, preset: preset) { [weak self] progress in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    if let idx = self.transcodeQueue.firstIndex(where: { $0.id == itemID }) {
-                        self.transcodeQueue[idx].progress = progress
-                    }
-                }
-            }
-        } catch {
-            print("[Transcode] Failed for \(item.title): \(error.localizedDescription)")
-            return nil
-        }
-    }
-
-    /// Triggers a manual transcode, bypassing the automatic threshold check.
-    private func forceTranscode(item: MediaItem, preset: TranscodePreset) async {
-        guard let folder = Self.resolvedFolder(for: item.type) else { return }
-        guard let fileURL = localURL(for: item) else { return }
-
-        // Respect the hardware engine pool so manual transcodes don't pile on top of automatic ones.
-        do {
-            try await transcodePool.waitForSlot()
-        } catch {
-            return
-        }
-
-        DispatchQueue.main.async {
-            self.transcodeQueue.append(TranscodeQueueEntry(id: item.id, title: item.title, posterURL: item.posterURL, mediaType: item.type, progress: 0))
-        }
-
-        let pool = transcodePool
-        let itemID = item.id
-        defer {
-            Task { await pool.release() }
-            DispatchQueue.main.async { self.transcodeQueue.removeAll { $0.id == itemID } }
-        }
-
-        do {
-            let transcodedURL = try await VideoTranscoder.transcode(fileURL: fileURL, preset: preset) { [weak self] progress in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    if let idx = self.transcodeQueue.firstIndex(where: { $0.id == itemID }) {
-                        self.transcodeQueue[idx].progress = progress
-                    }
-                }
-            }
-            let newRelative = String(transcodedURL.path.dropFirst(folder.path.count + 1))
-            var updatedIndex = Self.readIndexFromFolder(folder)
-            updatedIndex[item.id] = DownloadIndexEntry(item: item, filename: newRelative)
-            Self.writeIndex(updatedIndex, to: folder)
-        } catch {
-            print("[Transcode] Manual transcode failed: \(error.localizedDescription)")
-        }
-    }
-
-    func applyStorageOptimisationSettings() {
-        guard !activeTasks.isEmpty else { return }
-
-        // Snapshot queued items so we can restart them with the new settings.
-        let entriesToRestart = transcodeQueue
-
-        // Cancel every active transcode; the pool slots free up as they unwind.
-        for task in activeTasks.values { task.cancel() }
-        activeTasks.removeAll()
-
-        // Restart each item. Pool limits encoding concurrency while the cancelled
-        // transcodes drain their remaining pool slots.
-        for entry in entriesToRestart {
-            guard let folder = Self.resolvedFolder(for: entry.mediaType) else { continue }
-            let index = Self.readIndexFromFolder(folder)
-            guard let indexEntry = index[entry.id],
-                  let filename = indexEntry.filename else { continue }
-            let fileURL = folder.appending(path: filename)
-            guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
-
-            let task = Task<URL?, Never> { [weak self] in
-                await self?.maybeTranscode(item: indexEntry.item, fileURL: fileURL, folder: folder)
-            }
-            activeTasks[entry.id] = task
-
-            let capturedID = entry.id
-            Task { [weak self] in
-                if let url = await task.value {
-                    let newRelative = String(url.path.dropFirst(folder.path.count + 1))
-                    var updatedIndex = Self.readIndexFromFolder(folder)
-                    updatedIndex[capturedID] = DownloadIndexEntry(item: indexEntry.item, filename: newRelative)
-                    Self.writeIndex(updatedIndex, to: folder)
-                }
-                self?.activeTasks.removeValue(forKey: capturedID)
-            }
-        }
     }
 }
 #endif // os(macOS)

@@ -6,6 +6,7 @@ This is a fork of [KuDoZ007/QP](https://github.com/KuDoZ007/QP) with the followi
 *   **Artwork loading:** Posters now load through a small `ArtworkImage` view. It keeps the "Cache Artwork Locally" setting, and it decodes and downsamples images off the main thread, which reduces memory use and scrolling hitches.
 *   **Cleanup:** Removed the unused `ActivitySection.swift`.
 *   **Secrets no longer committed:** `QuPi/Secrets.swift` is now ignored by Git (the upstream `.gitignore` pointed to the wrong path). You need to create it yourself before building; see below.
+*   **No transcoding:** The unfinished post-download transcoding feature (its settings were already hidden upstream) is removed, so FFmpeg is no longer needed.
 *   **Builds without Xcode:** `./build.sh` builds and launches the app using only the Command Line Tools.
 
 See [CHANGELOG.md](CHANGELOG.md) for details.
@@ -76,7 +77,6 @@ Have used Gemini and Claude to help me build this; though all the prototyping, t
 ## Prerequisites
 
 *   macOS 26 (Tahoe) or later
-*   FFmpeg installed locally for offline fallback play — brew install ffmpeg
 *   A Plex Media Server, Jellyfin Server or local media files
 
 ## Getting Started
