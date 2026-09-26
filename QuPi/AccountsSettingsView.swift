@@ -343,7 +343,7 @@ struct AccountsSettingsView: View {
                 Button(traktSignInTask != nil ? "Connecting…" : "Sign in with Trakt") {
                     connectTrakt()
                 }
-                .disabled(traktSignInTask != nil)
+                .disabled(traktSignInTask != nil || !TraktSecrets.isConfigured)
                 if !traktAccessToken.isEmpty {
                     Button("Disconnect") {
                         traktAccessToken = ""
@@ -357,6 +357,11 @@ struct AccountsSettingsView: View {
                 Text("Connected — movie playback will be scrobbled.")
                     .font(.callout)
                     .foregroundStyle(.green)
+            }
+            if !TraktSecrets.isConfigured {
+                Text("Trakt API keys are not set. Add them to Secrets.swift to enable sign-in.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
             statusText(traktStatus)
         }
@@ -392,7 +397,7 @@ struct AccountsSettingsView: View {
                 Button(lastfmSignInTask != nil ? "Connecting…" : "Connect to Last.fm") {
                     connectLastFM()
                 }
-                .disabled(lastfmSignInTask != nil)
+                .disabled(lastfmSignInTask != nil || !LastFMSecrets.isConfigured)
                 if lastfmSessionKey != nil {
                     Button("Disconnect") {
                         lastfmSessionKey = nil
@@ -405,6 +410,11 @@ struct AccountsSettingsView: View {
                 Text("Connected — finished music playback will be scrobbled.")
                     .font(.callout)
                     .foregroundStyle(.green)
+            }
+            if !LastFMSecrets.isConfigured {
+                Text("Last.fm API keys are not set. Add them to Secrets.swift to enable sign-in.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
             statusText(lastfmStatus)
         }
