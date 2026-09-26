@@ -276,7 +276,7 @@ struct AccountsSettingsView: View {
                     serverName: server.name
                 )
                 let libraries = try await PlexClient(config: config).libraries()
-                plexServerStatuses[server.id] = "Connected — \(libraries.count) libraries found."
+                plexServerStatuses[server.id] = "Connected via \(config.serverURL.host() ?? "server") — \(libraries.count) libraries found."
             } catch {
                 plexServerStatuses[server.id] = "Connection failed: \(error.localizedDescription)"
             }

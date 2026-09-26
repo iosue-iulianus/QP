@@ -11,10 +11,20 @@ final class PlexConfiguration {
     /// to route items back to the server they came from.
     var serverID: String
     var serverName: String
+    /// Every known address for the server, in preference order. Unlike
+    /// `serverURL`, this never changes, so a connection check always
+    /// considers all of them.
+    let candidateURLs: [URL]
+    /// The shared in-flight (or finished) connection check, and the network
+    /// generation it ran for. See `PlexClient.ensureConnection`.
+    var connectionCheck: Task<URL?, Never>?
+    var connectionCheckGeneration = -1
 
     init(serverURL: URL, fallbackURLs: [URL]? = nil, token: String, serverID: String = "", serverName: String = "") {
         self.serverURL = serverURL
         self.fallbackURLs = fallbackURLs
+        var seen = Set<URL>()
+        self.candidateURLs = ([serverURL] + (fallbackURLs ?? [])).filter { seen.insert($0).inserted }
         self.token = token
         self.serverID = serverID
         self.serverName = serverName
@@ -118,31 +128,81 @@ struct PlexClient {
     // MARK: - Server requests
 
     private func fetchData(path: String, query: [URLQueryItem] = []) async throws -> (Data, URLResponse) {
-        let urls = [config.serverURL] + (config.fallbackURLs ?? [])
-        var lastError: Error?
-        for url in urls {
-            var components = URLComponents(
-                url: url.appending(path: path),
-                resolvingAgainstBaseURL: false
-            )!
-            components.queryItems = (components.queryItems ?? []) + query
-            var request = URLRequest(url: components.url!)
-            request.setValue("application/json", forHTTPHeaderField: "Accept")
-            request.setValue(config.token, forHTTPHeaderField: "X-Plex-Token")
-            request.setValue(Self.clientIdentifier, forHTTPHeaderField: "X-Plex-Client-Identifier")
-            request.setValue(Self.productName, forHTTPHeaderField: "X-Plex-Product")
-            
-            do {
-                let result = try await URLSession.shared.data(for: request)
-                if url != config.serverURL {
-                    config.serverURL = url
-                }
-                return result
-            } catch {
-                lastError = error
+        try await ensureConnection()
+        do {
+            return try await fetchData(from: config.serverURL, path: path, query: query)
+        } catch let error as URLError where error.code != .cancelled {
+            // The address stopped answering without a local network change
+            // (e.g. the server went offline or changed IP). Re-check and
+            // retry once if a different address answers.
+            let failedURL = config.serverURL
+            try await ensureConnection(force: true)
+            guard config.serverURL != failedURL else { throw error }
+            return try await fetchData(from: config.serverURL, path: path, query: query)
+        }
+    }
+
+    private func fetchData(from baseURL: URL, path: String, query: [URLQueryItem]) async throws -> (Data, URLResponse) {
+        var components = URLComponents(
+            url: baseURL.appending(path: path),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = (components.queryItems ?? []) + query
+        var request = URLRequest(url: components.url!)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(config.token, forHTTPHeaderField: "X-Plex-Token")
+        request.setValue(Self.clientIdentifier, forHTTPHeaderField: "X-Plex-Client-Identifier")
+        request.setValue(Self.productName, forHTTPHeaderField: "X-Plex-Product")
+        return try await URLSession.shared.data(for: request)
+    }
+
+    // MARK: - Connection selection
+
+    /// How long each address gets to answer during a connection check.
+    nonisolated private static let connectionCheckTimeout: TimeInterval = 3
+
+    /// Points `config.serverURL` at the fastest address that answers. Runs on
+    /// first use, after a network change, or when `force` is set; concurrent
+    /// requests share one check. Trying addresses one by one instead meant
+    /// waiting ~60s for each unreachable LAN address when away from home.
+    private func ensureConnection(force: Bool = false) async throws {
+        let generation = NetworkChangeMonitor.shared.generation
+        if force || config.connectionCheck == nil || config.connectionCheckGeneration != generation {
+            config.connectionCheckGeneration = generation
+            config.connectionCheck = Task { [candidates = config.candidateURLs] in
+                await Self.fastestReachableURL(among: candidates)
             }
         }
-        throw lastError ?? URLError(.badURL)
+        guard let url = await config.connectionCheck?.value else {
+            config.connectionCheck = nil // check again on the next request
+            throw URLError(.cannotConnectToHost)
+        }
+        config.serverURL = url
+    }
+
+    /// Asks every address at once for Plex's /identity (which needs no
+    /// token, so nothing sensitive is sent) and returns the first to answer.
+    private static func fastestReachableURL(among urls: [URL]) async -> URL? {
+        await withTaskGroup(of: URL?.self) { group in
+            for url in urls {
+                group.addTask {
+                    let request = URLRequest(
+                        url: url.appending(path: "/identity"),
+                        timeoutInterval: connectionCheckTimeout
+                    )
+                    guard let (_, response) = try? await URLSession.shared.data(for: request),
+                          (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+                    return url
+                }
+            }
+            for await url in group {
+                if let url {
+                    group.cancelAll()
+                    return url
+                }
+            }
+            return nil
+        }
     }
 
     func libraries() async throws -> [PlexLibrary] {
