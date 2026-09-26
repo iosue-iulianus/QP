@@ -776,15 +776,17 @@ struct PlexClient {
                     if $0.relay != $1.relay { return !$0.relay }
                     return false
                 }
-                // For each connection emit the direct-IP URL before the plex.direct URI
-                // so that local plain-HTTP connections are tried first and relay last.
-                // Always add both http and https direct-IP variants so the app works
-                // regardless of the server's "Secure connections" setting.
+                // For each connection emit the direct-IP URL before the plex.direct URI,
+                // with relay last. Every request carries the Plex token, so plain HTTP is
+                // only allowed for local (LAN) connections, and https is tried first even
+                // there. Remote connections are https-only so the token is never sent
+                // unencrypted over the internet.
                 var seen = Set<String>()
                 var validURLs: [URL] = []
                 for connection in sorted {
                     if !connection.relay, !connection.address.isEmpty {
-                        for scheme in ["http", "https"] {
+                        let schemes = connection.local ? ["https", "http"] : ["https"]
+                        for scheme in schemes {
                             if let url = URL(string: "\(scheme)://\(connection.address):\(connection.port)"),
                                seen.insert(url.absoluteString).inserted {
                                 validURLs.append(url)
@@ -792,6 +794,7 @@ struct PlexClient {
                         }
                     }
                     if let uriURL = URL(string: connection.uri),
+                       connection.local || uriURL.scheme?.lowercased() != "http",
                        seen.insert(uriURL.absoluteString).inserted {
                         validURLs.append(uriURL)
                     }
