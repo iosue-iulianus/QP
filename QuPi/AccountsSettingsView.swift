@@ -1,7 +1,8 @@
 import SwiftUI
 import AuthenticationServices
 
-/// Sign-in for the media servers (Plex PIN flow, Jellyfin username/password)
+/// Sign-in for the media servers (Plex PIN flow, Jellyfin username/password
+/// or Quick Connect)
 /// and the scrobblers (Trakt OAuth, Last.fm web auth). Secrets are kept in the
 /// Keychain; only non-secret settings use UserDefaults.
 struct AccountsSettingsView: View {
@@ -33,6 +34,8 @@ struct AccountsSettingsView: View {
     @State private var plexServerStatuses: [String: String] = [:]
     @State private var manualPlexServerURL = ""
     @State private var jellyfinStatus = ""
+    @State private var quickConnectCode: String?
+    @State private var quickConnectTask: Task<Void, Never>?
     @State private var traktStatus = ""
     @State private var lastfmStatus = ""
     @State private var plexSignInTask: Task<Void, Never>?
@@ -296,6 +299,15 @@ struct AccountsSettingsView: View {
             HStack {
                 Button("Sign In") { signInToJellyfin() }
                     .disabled(jellyfinServerURL.isEmpty || jellyfinUsername.isEmpty)
+                Button(quickConnectTask == nil ? "Quick Connect" : "Cancel Quick Connect") {
+                    if let quickConnectTask {
+                        quickConnectTask.cancel()
+                    } else {
+                        startQuickConnect()
+                    }
+                }
+                .disabled(jellyfinServerURL.isEmpty)
+                .help("Sign in without a password by approving a code on a device that is already signed in to Jellyfin")
                 if !jellyfinUserID.isEmpty {
                     Button("Sign Out") {
                         KeychainStore.set(nil, for: KeychainKeys.jellyfinToken)
@@ -303,6 +315,16 @@ struct AccountsSettingsView: View {
                         jellyfinStatus = "Signed out."
                         appState.resetCatalog()
                     }
+                }
+            }
+            if let quickConnectCode {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(quickConnectCode)
+                        .font(.title2.monospacedDigit().weight(.semibold))
+                        .textSelection(.enabled)
+                    Text("On a device signed in to Jellyfin, open Settings > Quick Connect and enter this code.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                 }
             }
             if !jellyfinUserID.isEmpty {
@@ -330,13 +352,7 @@ struct AccountsSettingsView: View {
                         username: jellyfinUsername,
                         password: jellyfinPassword
                     )
-                    // Save the address that worked, scheme included.
-                    jellyfinServerURL = url.absoluteString
-                    KeychainStore.set(result.token, for: KeychainKeys.jellyfinToken)
-                    jellyfinUserID = result.userID
-                    jellyfinPassword = ""
-                    jellyfinStatus = ""
-                    appState.resetCatalog()
+                    completeJellyfinSignIn(url: url, result: result)
                     return
                 } catch let error as URLError where error.code == .userAuthenticationRequired {
                     // The server answered and rejected the credentials, so
@@ -349,6 +365,67 @@ struct AccountsSettingsView: View {
             }
             jellyfinStatus = "Sign-in failed: \(lastError?.localizedDescription ?? "server not reachable.")"
         }
+    }
+
+    /// Quick Connect: shows a code, waits for the user to approve it in
+    /// another signed-in Jellyfin app, then signs in with no password.
+    private func startQuickConnect() {
+        let candidates = serverURLCandidates(jellyfinServerURL)
+        guard !candidates.isEmpty else {
+            jellyfinStatus = "Invalid server URL."
+            return
+        }
+        jellyfinStatus = "Starting Quick Connect…"
+        quickConnectTask = Task {
+            defer {
+                quickConnectTask = nil
+                quickConnectCode = nil
+            }
+            do {
+                // Start on the first address that answers (HTTPS, then HTTP).
+                var started: (url: URL, request: JellyfinClient.QuickConnectRequest)?
+                var lastError: Error?
+                for url in candidates {
+                    do {
+                        started = (url, try await JellyfinClient.initiateQuickConnect(serverURL: url))
+                        break
+                    } catch let error as JellyfinClient.QuickConnectError {
+                        throw error
+                    } catch {
+                        lastError = error
+                    }
+                }
+                guard let started else { throw lastError ?? URLError(.cannotConnectToHost) }
+                quickConnectCode = started.request.Code
+                jellyfinStatus = ""
+                // ponytail: fixed 2 s poll for up to 5 min; the server expires codes on its own.
+                for _ in 0..<150 {
+                    try await Task.sleep(for: .seconds(2))
+                    let state = try await JellyfinClient.quickConnectState(serverURL: started.url, secret: started.request.Secret)
+                    guard state.Authenticated else { continue }
+                    let result = try await JellyfinClient.authenticate(serverURL: started.url, quickConnectSecret: started.request.Secret)
+                    completeJellyfinSignIn(url: started.url, result: result)
+                    return
+                }
+                jellyfinStatus = "Quick Connect timed out. Try again."
+            } catch is CancellationError {
+                jellyfinStatus = ""
+            } catch {
+                jellyfinStatus = "Quick Connect failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Saves a successful Jellyfin sign-in: the address that worked (scheme
+    /// included), the token in the Keychain, and the user.
+    private func completeJellyfinSignIn(url: URL, result: JellyfinClient.SignInResult) {
+        jellyfinServerURL = url.absoluteString
+        jellyfinUsername = result.userName
+        KeychainStore.set(result.token, for: KeychainKeys.jellyfinToken)
+        jellyfinUserID = result.userID
+        jellyfinPassword = ""
+        jellyfinStatus = ""
+        appState.resetCatalog()
     }
 
     // MARK: - Trakt

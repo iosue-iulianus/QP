@@ -51,26 +51,104 @@ struct JellyfinClient {
 
     // MARK: - Authentication
 
-    /// Signs in with username/password; the returned token and user ID are
-    /// what a JellyfinConfiguration needs.
-    static func authenticate(serverURL: URL, username: String, password: String) async throws -> (token: String, userID: String) {
+    /// What a successful sign-in returns; the token and user ID are what a
+    /// JellyfinConfiguration needs.
+    struct SignInResult {
+        let token: String
+        let userID: String
+        let userName: String
+    }
+
+    /// Signs in with username/password.
+    static func authenticate(serverURL: URL, username: String, password: String) async throws -> SignInResult {
+        var request = anonymousRequest(serverURL.appending(path: "/Users/AuthenticateByName"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(["Username": username, "Pw": password])
+        return try await signIn(request)
+    }
+
+    /// Exchanges an approved Quick Connect request for an access token.
+    static func authenticate(serverURL: URL, quickConnectSecret secret: String) async throws -> SignInResult {
+        var request = anonymousRequest(serverURL.appending(path: "/Users/AuthenticateWithQuickConnect"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(["Secret": secret])
+        return try await signIn(request)
+    }
+
+    private static func signIn(_ request: URLRequest) async throws -> SignInResult {
         struct Response: Decodable {
-            struct User: Decodable { let Id: String }
+            struct User: Decodable {
+                let Id: String
+                let Name: String
+            }
             let AccessToken: String
             let User: User
         }
-        var request = URLRequest(url: serverURL.appending(path: "/Users/AuthenticateByName"))
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue(authorizationHeader(token: nil), forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONEncoder().encode(["Username": username, "Pw": password])
         let (data, response) = try await URLSession.shared.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw URLError(.userAuthenticationRequired)
         }
         let decoded = try JSONDecoder().decode(Response.self, from: data)
-        return (decoded.AccessToken, decoded.User.Id)
+        return SignInResult(token: decoded.AccessToken, userID: decoded.User.Id, userName: decoded.User.Name)
+    }
+
+    /// A request with client identification but no token, for sign-in
+    /// endpoints.
+    private static func anonymousRequest(_ url: URL) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(authorizationHeader(token: nil), forHTTPHeaderField: "Authorization")
+        return request
+    }
+
+    // MARK: - Quick Connect
+
+    /// A pending Quick Connect request. The user approves `Code` from any
+    /// Jellyfin app that is already signed in; `Secret` identifies the
+    /// request to this app.
+    struct QuickConnectRequest: Decodable {
+        let Secret: String
+        let Code: String
+        let Authenticated: Bool
+    }
+
+    enum QuickConnectError: LocalizedError {
+        case disabled
+        case expired
+
+        var errorDescription: String? {
+            switch self {
+            case .disabled: "Quick Connect is turned off on this server. An admin can enable it in the Jellyfin dashboard."
+            case .expired: "The code expired. Start Quick Connect again."
+            }
+        }
+    }
+
+    /// Starts a Quick Connect request (Jellyfin 10.9 and later).
+    static func initiateQuickConnect(serverURL: URL) async throws -> QuickConnectRequest {
+        var request = anonymousRequest(serverURL.appending(path: "/QuickConnect/Initiate"))
+        request.httpMethod = "POST"
+        return try await quickConnect(request)
+    }
+
+    /// The request's current state; `Authenticated` becomes true once the
+    /// user approves the code.
+    static func quickConnectState(serverURL: URL, secret: String) async throws -> QuickConnectRequest {
+        let url = serverURL.appending(path: "/QuickConnect/Connect")
+            .appending(queryItems: [URLQueryItem(name: "secret", value: secret)])
+        return try await quickConnect(anonymousRequest(url))
+    }
+
+    private static func quickConnect(_ request: URLRequest) async throws -> QuickConnectRequest {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        switch (response as? HTTPURLResponse)?.statusCode {
+        case 200: return try JSONDecoder().decode(QuickConnectRequest.self, from: data)
+        case 401, 403: throw QuickConnectError.disabled
+        case 404: throw QuickConnectError.expired
+        default: throw URLError(.badServerResponse)
+        }
     }
 
     // MARK: - Catalog
