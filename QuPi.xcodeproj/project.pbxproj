@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		D2B33E53301475B10070F726 /* CLAUDE.md in Resources */ = {isa = PBXBuildFile; fileRef = D2B33E52301475B10070F726 /* CLAUDE.md */; };
 		D2DAEB623013BD43007A6FC3 /* SwiftVLC in Frameworks */ = {isa = PBXBuildFile; productRef = D2DAEB613013BD43007A6FC3 /* SwiftVLC */; };
 /* End PBXBuildFile section */
 
@@ -129,7 +128,6 @@
 		000000000000000140000000 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
-				D2B33E53301475B10070F726 /* CLAUDE.md in Resources */,
 			);
 		};
 /* End PBXResourcesBuildPhase section */
