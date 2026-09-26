@@ -82,6 +82,8 @@ enum MenuSection: String, CaseIterable, Identifiable, Codable {
 /// Which backend an item came from; used to route stream resolution and
 /// playback reporting.
 enum MediaSource: String, Codable, Hashable {
+    /// No longer produced (the sample catalog is gone); kept so progress
+    /// saved by older builds still decodes instead of wiping Continue….
     case sample
     case plex
     case jellyfin
@@ -285,14 +287,12 @@ enum SortDirection: String, CaseIterable {
 /// Codable + Hashable so it can be handed to `WindowGroup(for:)` to open a player window.
 struct MediaItem: Identifiable, Hashable, Codable {
     var id: String
-    var source: MediaSource = .sample
+    var source: MediaSource
     var type: MediaType
     var kind: MediaKind = .movie
     var title: String
     var subtitle: String?
     var posterURL: URL?
-    /// Known up-front for Plex items; resolved lazily otherwise.
-    var streamURL: URL?
     var summary: String?
     /// The container this item was listed under (season for an episode,
     /// album/playlist for a track); lets auto-continue and the music queue

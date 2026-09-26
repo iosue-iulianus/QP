@@ -227,7 +227,6 @@ struct PlexClient {
                 title: entry.title,
                 subtitle: entry.parentTitle ?? entry.grandparentTitle ?? entry.year.map(String.init),
                 posterURL: entry.thumb.map(imageURL(thumbPath:)),
-                streamURL: nil,
                 summary: entry.summary,
                 // For season top-level display, carry parent (show) context so artwork
                 // downloads can place the show poster next to the show folder.
@@ -290,7 +289,6 @@ struct PlexClient {
                 title: entry.title,
                 subtitle: subtitle,
                 posterURL: entry.thumb.map(imageURL(thumbPath:)) ?? item.posterURL,
-                streamURL: nil,
                 summary: entry.summary,
                 parentID: item.id,
                 parentKind: item.kind,
@@ -324,7 +322,6 @@ struct PlexClient {
                 title: entry.title,
                 subtitle: entry.leafCount.map { "\($0) items" },
                 posterURL: (entry.composite ?? entry.thumb).map(imageURL(thumbPath:)),
-                streamURL: nil,
                 summary: entry.summary
             )
         }
@@ -411,7 +408,6 @@ struct PlexClient {
             title: entry.title,
             subtitle: entry.year.map(String.init),
             posterURL: entry.thumb.map(imageURL(thumbPath:)),
-            streamURL: nil,
             summary: entry.summary,
             attributes: [
                 "releaseDate": entry.originallyAvailableAt ?? "",
@@ -485,7 +481,6 @@ struct PlexClient {
             title: pick.title,
             subtitle: pick.grandparentTitle,
             posterURL: pick.thumb.map(imageURL(thumbPath:)) ?? item.posterURL,
-            streamURL: nil,
             summary: pick.summary
         )
     }
@@ -872,7 +867,6 @@ struct PlexMediaProvider: MediaProvider {
     }
 
     func streamURL(for item: MediaItem) async throws -> URL {
-        if let direct = item.streamURL { return direct }
         return item.kind == .track
             ? await client.trackStreamURL(ratingKey: item.id)
             : await client.videoStreamURL(ratingKey: item.id)

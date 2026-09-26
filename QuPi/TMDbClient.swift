@@ -99,17 +99,6 @@ struct TMDbClient {
         return show.posterPath
     }
 
-    func episodeStillPath(tvTMDbID: Int, season: Int, episode: Int) async -> String? {
-        struct Episode: Decodable {
-            let stillPath: String?
-            enum CodingKeys: String, CodingKey { case stillPath = "still_path" }
-        }
-        let query = [URLQueryItem(name: "api_key", value: apiKey)]
-        guard let data = try? await get(path: "/tv/\(tvTMDbID)/season/\(season)/episode/\(episode)", query: query),
-              let ep = try? JSONDecoder().decode(Episode.self, from: data) else { return nil }
-        return ep.stillPath
-    }
-
     // MARK: - URL builder
 
     static func posterURL(path: String) -> URL? {

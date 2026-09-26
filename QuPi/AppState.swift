@@ -85,7 +85,7 @@ final class AppState {
         var names: [String] = []
         if !plexConfigurations.isEmpty { names.append("Plex") }
         if jellyfinConfiguration != nil { names.append("Jellyfin") }
-        return names.isEmpty ? "Sample catalog" : names.joined(separator: " + ")
+        return names.isEmpty ? "No sources" : names.joined(separator: " + ")
     }
 
     // MARK: - Backend configuration

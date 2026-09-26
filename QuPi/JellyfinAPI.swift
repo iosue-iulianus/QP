@@ -168,7 +168,6 @@ struct JellyfinClient {
                 // Season top level keeps the show visible via the subtitle.
                 subtitle: item.SeriesName ?? item.AlbumArtist ?? item.ProductionYear.map(String.init),
                 posterURL: imageURL(itemID: item.Id),
-                streamURL: nil,
                 summary: item.Overview,
                 attributes: [
                     "releaseDate": item.PremiereDate ?? "",
@@ -241,7 +240,6 @@ struct JellyfinClient {
                 title: entry.Name,
                 subtitle: subtitle,
                 posterURL: imageURL(itemID: entry.Id),
-                streamURL: nil,
                 summary: entry.Overview,
                 parentID: item.id,
                 parentKind: item.kind,
@@ -272,7 +270,6 @@ struct JellyfinClient {
                 title: entry.Name,
                 subtitle: nil,
                 posterURL: imageURL(itemID: entry.Id),
-                streamURL: nil,
                 summary: entry.Overview
             )
         }
@@ -356,7 +353,6 @@ struct JellyfinClient {
             title: entry.Name,
             subtitle: entry.ProductionYear.map(String.init),
             posterURL: imageURL(itemID: entry.Id),
-            streamURL: nil,
             summary: entry.Overview,
             attributes: [
                 "releaseDate": entry.PremiereDate ?? "",
@@ -424,7 +420,6 @@ struct JellyfinClient {
             title: pick.Name,
             subtitle: pick.AlbumArtist,
             posterURL: imageURL(itemID: pick.Id),
-            streamURL: nil,
             summary: pick.Overview
         )
     }

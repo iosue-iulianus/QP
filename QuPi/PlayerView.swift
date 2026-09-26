@@ -7,9 +7,7 @@ struct PlayerView: View {
     @Binding var item: MediaItem
 
     @Environment(AppState.self) private var appState
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.dismiss) private var dismissWindow
-    // errorMessage moved to AppState.playbackError so both engines can set it.
     @State private var isPinned = false
     @State private var queue: [MediaItem] = []
     @State private var videoAspectRatio: CGFloat?
@@ -32,23 +30,6 @@ struct PlayerView: View {
 
     private var windowTitle: String {
         item.subtitle.map { "\(item.title) — \($0)" } ?? item.title
-    }
-
-    private var uiScale: CGFloat {
-        switch playerUISize {
-        case .small: 0.75
-        case .medium: 1.0
-        case .large: 1.35
-        case .dynamic:
-            switch dynamicTypeSize {
-            case .xSmall, .small: 0.75
-            case .medium: 1.0
-            case .large: 1.15
-            case .xLarge: 1.25
-            case .xxLarge, .xxxLarge: 1.35
-            default: 1.5
-            }
-        }
     }
 
     var body: some View {
@@ -143,20 +124,6 @@ struct PlayerView: View {
                 appState.seek(to: 0) // Basic previous logic for windowed mode
             }
         }
-    }
-
-    private var pinOverlay: some View {
-        Button {
-            isPinned.toggle()
-        } label: {
-            Image(systemName: isPinned ? "pin.fill" : "pin")
-                .font(.system(size: 11 * uiScale))
-                .padding(8)
-                .background(.ultraThinMaterial, in: Circle())
-        }
-        .buttonStyle(.plain)
-        .help(isPinned ? "Let other windows cover this player" : "Keep this player above other windows")
-        .padding(8)
     }
 
     // MARK: - Video player
@@ -449,18 +416,6 @@ struct PlayerView: View {
                 item = next
             } else if let next = await appState.autoContinueItem(after: item) {
                 item = next
-            }
-        }
-    }
-
-    private func toggleFullScreen() {
-        DispatchQueue.main.async {
-            if let window = NSApplication.shared.keyWindow {
-                if window.styleMask.contains(.fullScreen) {
-                    window.toggleFullScreen(nil)
-                } else {
-                    window.toggleFullScreen(nil)
-                }
             }
         }
     }
@@ -799,9 +754,9 @@ private struct MusicPlayerLayout: View {
     @Previewable @State var time = 83.0
     @Previewable @State var scrubbing = false
     MusicPlayerLayout(
-        item: MediaItem(id: "t1", type: .music, kind: .track, title: "Sample Track", subtitle: "Sample Artist"),
+        item: MediaItem(id: "t1", source: .local, type: .music, kind: .track, title: "Sample Track", subtitle: "Sample Artist"),
         queue: (2...8).map {
-            MediaItem(id: "t\($0)", type: .music, kind: .track, title: "Queued Track \($0)", subtitle: "Sample Artist")
+            MediaItem(id: "t\($0)", source: .local, type: .music, kind: .track, title: "Queued Track \($0)", subtitle: "Sample Artist")
         },
         isPlaying: true,
         currentTime: $time,

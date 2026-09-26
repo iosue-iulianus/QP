@@ -15,11 +15,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Posters now load through a new `ArtworkImage` view instead of `AsyncImage(request:)` and `.asyncImageURLSession(_:)`, which only exist on macOS 27. Images are decoded and downsampled off the main thread, and the "Cache Artwork Locally" setting still applies.
 - Xcode previews (`#Preview`) are skipped in SwiftPM builds, since previews only work in Xcode. They still work in the Xcode project.
 - `.gitignore` now excludes the SwiftPM build output (`.build/` and `dist/`).
+- The menu header says "No sources" instead of "Sample catalog" when no server is connected, since there is no sample catalog.
 
 ### Removed
 
 - Post-download transcoding (`VideoTranscoder.swift`, `TranscodeSettings.swift`, the Converting section and the convert prompt). Its settings were already commented out upstream, so it never ran on a fresh install. FFmpeg is no longer needed.
 - `ActivitySection.swift`, which was not used anywhere.
+- Other unused code: the player's `pinOverlay`, `uiScale` and `toggleFullScreen`, `TMDbClient.episodeStillPath`, and the always-empty `MediaItem.streamURL` field.
 - `QuPi/Secrets.swift` from the repository. Create it locally before building; the README has a template.
 
 ### Fixed
