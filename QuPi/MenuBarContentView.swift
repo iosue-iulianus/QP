@@ -9,6 +9,7 @@ struct MenuBarContentView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.appearsActive) private var appearsActive
 
     private let downloadManager = DownloadManager.shared
 
@@ -95,7 +96,11 @@ struct MenuBarContentView: View {
         }
         .frame(width: contentWidth)
         .fixedSize(horizontal: false, vertical: true)
-        .onAppear { appState.menuDidOpen() }
+        // True whenever the menu's window is active, i.e. each time the menu
+        // opens. (onAppear can fire only once for a MenuBarExtra window.)
+        .onChange(of: appearsActive, initial: true) { _, active in
+            if active { appState.menuDidOpen() }
+        }
         .onChange(of: searchFocused) {
             if searchFocused {
                 withAnimation(.snappy(duration: 0.2)) { appState.activateSearch() }

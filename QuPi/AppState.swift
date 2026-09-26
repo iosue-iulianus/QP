@@ -404,11 +404,33 @@ final class AppState {
 
     // MARK: - Catalog
 
-    /// Called each time the menu opens: refreshes Continue Watching when it's
-    /// shown open, so progress made on other devices appears.
+    /// When each library section's catalog was last fetched.
+    @ObservationIgnored private var sectionFetchedAt: [MenuSection: Date] = [:]
+    /// Loaded library sections refresh on menu open at most this often.
+    private static let menuOpenRefreshInterval: TimeInterval = 120
+
+    /// Called each time the menu opens, so changes made elsewhere (watched on
+    /// a TV, added to the server) appear without restarting: refreshes
+    /// Continue Watching when it's open, and in the background every loaded
+    /// library section (and its open season or episode lists) not fetched
+    /// in the last two minutes.
     func menuDidOpen() {
         if isContinueExpanded, enabledSections.contains(.continueItems) {
             Task { await load(.continueItems) }
+        }
+        guard !isSearchActive else { return }
+        let now = Date.now
+        for section in itemsBySection.keys where section.mediaType != nil {
+            let fetchedAt = sectionFetchedAt[section] ?? .distantPast
+            guard now.timeIntervalSince(fetchedAt) >= Self.menuOpenRefreshInterval else { continue }
+            sectionFetchedAt[section] = now // don't start a second refresh while this one runs
+            let openParents = drillPath[section] ?? []
+            Task {
+                await refreshSilently(section)
+                for parent in openParents {
+                    await refreshChildrenSilently(of: parent)
+                }
+            }
         }
     }
 
@@ -552,6 +574,7 @@ final class AppState {
 
         let (items, failures) = await fetchCatalog(for: section)
         itemsBySection[section] = items
+        sectionFetchedAt[section] = .now
         // Only surface errors when nothing loaded; partial results win.
         errorsBySection[section] = items.isEmpty && !failures.isEmpty ? failures.joined(separator: " • ") : nil
         // Deep-search matches are placed by the section items they belong
@@ -613,6 +636,7 @@ final class AppState {
         let (items, failures) = await fetchCatalog(for: section)
         guard failures.isEmpty else { return }
         itemsBySection[section] = items
+        sectionFetchedAt[section] = .now
     }
 
     /// Re-fetches a cached drill-down (e.g. a show's seasons) in place.
@@ -684,6 +708,7 @@ final class AppState {
         childErrorsByItemID = [:]
         serverContinueItems = nil
         serverContinueFetchedAt = nil
+        sectionFetchedAt = [:]
     }
 
     // MARK: - Search
