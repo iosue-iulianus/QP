@@ -14,7 +14,6 @@ struct MenuBarContentView: View {
     private let downloadManager = DownloadManager.shared
 
     @FocusState private var searchFocused: Bool
-    @AppStorage(SettingsKeys.cacheArtwork) private var cacheArtwork = true
     @AppStorage("carouselVisibleCount") private var carouselVisibleCount = 3
     @AppStorage(SettingsKeys.playerMode) private var playerMode = PlayerMode.popout.rawValue
 
@@ -108,7 +107,6 @@ struct MenuBarContentView: View {
         }
         .frame(width: contentWidth)
         .fixedSize(horizontal: false, vertical: true)
-        .asyncImageURLSession(cacheArtwork ? ArtworkCache.persistentSession : ArtworkCache.ephemeralSession)
         .onChange(of: searchFocused) {
             if searchFocused {
                 withAnimation(.snappy(duration: 0.2)) { appState.activateSearch() }

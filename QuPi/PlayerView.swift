@@ -683,11 +683,7 @@ private struct MusicPlayerLayout: View {
             RoundedRectangle(cornerRadius: 12)
                 .fill(.quaternary)
             if let url = item.posterURL {
-                AsyncImage(request: URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad)) { image in
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } placeholder: {
+                ArtworkImage(url: url) {
                     ProgressView()
                 }
             } else {
@@ -782,9 +778,7 @@ private struct MusicPlayerLayout: View {
         ZStack {
             RoundedRectangle(cornerRadius: 4).fill(.quaternary)
             if let url = track.posterURL {
-                AsyncImage(request: URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad)) { image in
-                    image.resizable().aspectRatio(contentMode: .fill)
-                } placeholder: {
+                ArtworkImage(url: url) {
                     Image(systemName: "music.note").font(.caption2).foregroundStyle(.secondary)
                 }
             }

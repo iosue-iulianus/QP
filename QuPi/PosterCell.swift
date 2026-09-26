@@ -213,11 +213,7 @@ struct PosterCell: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(.quaternary)
             if let url = item.posterURL {
-                AsyncImage(request: URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad)) { image in
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } placeholder: {
+                ArtworkImage(url: url) {
                     ProgressView()
                         .controlSize(.small)
                 }

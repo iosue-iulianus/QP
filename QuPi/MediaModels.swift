@@ -412,7 +412,7 @@ func franchiseBaseTitle(_ title: String) -> String {
 
 /// UserDefaults keys for non-secret settings. Tokens and secrets live in
 /// the Keychain under `KeychainKeys`.
-enum SettingsKeys {
+nonisolated enum SettingsKeys {
     static let useMediaKeys = "useMediaKeys"
     /// JSON-encoded [PlexServer]. `plexServerURL` remains only so older
     /// single-server setups can be migrated by PlexServerStore.

@@ -1,3 +1,39 @@
+## About this fork
+
+This is a fork of [KuDoZ007/QP](https://github.com/KuDoZ007/QP) with the following changes:
+
+*   **macOS 26 support:** The deployment target is lowered from macOS 27 to macOS 26 (Tahoe). The upstream build relied on two SwiftUI APIs that only exist on macOS 27 (`AsyncImage(request:)` and `.asyncImageURLSession(_:)`).
+*   **Artwork loading:** Posters now load through a small `ArtworkImage` view. It keeps the "Cache Artwork Locally" setting, and it decodes and downsamples images off the main thread, which reduces memory use and scrolling hitches.
+*   **Cleanup:** Removed the unused `ActivitySection.swift`.
+*   **Secrets no longer committed:** `QuPi/Secrets.swift` is now ignored by Git (the upstream `.gitignore` pointed to the wrong path). You need to create it yourself before building; see below.
+
+### Building this fork
+
+Requirements: macOS 26 or later and Xcode 26.4 or later (the SwiftVLC package requires Swift 6.3).
+
+1.  Create `QuPi/Secrets.swift` with your own credentials:
+
+    ```swift
+    enum TraktSecrets {
+        static let clientID     = "YOUR_TRAKT_CLIENT_ID"
+        static let clientSecret = "YOUR_TRAKT_CLIENT_SECRET"
+        static let redirectURI  = "qupi://trakt-auth"
+    }
+
+    enum LastFMSecrets {
+        static let apiKey       = "YOUR_LASTFM_API_KEY"
+        static let sharedSecret = "YOUR_LASTFM_SHARED_SECRET"
+        static let callbackURL  = "qupi://lastfm-auth"
+    }
+    ```
+
+    Trakt: register at https://trakt.tv/oauth/applications/new with redirect URI `qupi://trakt-auth`.
+    Last.fm: register at https://www.last.fm/api/account/create with callback URL `qupi://lastfm-auth`.
+    The placeholders are enough to build; scrobbling needs real values.
+2.  Open `QuPi.xcodeproj`, select your own development team under Signing & Capabilities, and run.
+
+---
+
 # QuPi 
 
 **Your entire media library, right from your macOS menu bar.**
@@ -34,7 +70,7 @@ Have used Gemini and Claude to help me build this; though all the prototyping, t
 
 ## Prerequisites
 
-*   macOS 27 (Golden Gate or later)
+*   macOS 26 (Tahoe) or later
 *   FFmpeg installed locally for offline fallback play — brew install ffmpeg
 *   A Plex Media Server, Jellyfin Server or local media files
 
