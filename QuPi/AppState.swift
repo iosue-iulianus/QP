@@ -330,24 +330,40 @@ final class AppState {
         errorsBySection[section] = nil
         defer { loadingSections.remove(section) }
 
+        // Query every source at once; results are reassembled in provider
+        // order so the merged list is stable.
+        let sources = providers
+        let results = await withTaskGroup(of: (Int, Result<[MediaItem], Error>).self) { group in
+            for (index, provider) in sources.enumerated() {
+                group.addTask { @MainActor in
+                    do {
+                        if let mediaType = section.mediaType {
+                            return (index, .success(try await provider.items(for: mediaType)))
+                        }
+                        return (index, .success(section == .playlists ? try await provider.playlists() : []))
+                    } catch {
+                        return (index, .failure(error))
+                    }
+                }
+            }
+            var results = [Result<[MediaItem], Error>?](repeating: nil, count: sources.count)
+            for await (index, result) in group { results[index] = result }
+            return results
+        }
+
         var serverItems: [MediaItem] = []
         var localItems: [MediaItem] = []
         var failures: [String] = []
-        for provider in providers {
-            do {
-                var providerItems: [MediaItem] = []
-                if let mediaType = section.mediaType {
-                    providerItems = try await provider.items(for: mediaType)
-                } else if section == .playlists {
-                    providerItems = try await provider.playlists()
-                }
-                if provider.source == .local {
-                    localItems = providerItems
-                } else {
-                    serverItems += providerItems
-                }
-            } catch {
+        for (provider, result) in zip(sources, results) {
+            switch result {
+            case .success(let providerItems) where provider.source == .local:
+                localItems = providerItems
+            case .success(let providerItems):
+                serverItems += providerItems
+            case .failure(let error):
                 failures.append("\(provider.source.rawValue): \(error.localizedDescription)")
+            case nil:
+                break
             }
         }
         // De-dupe: local items only appear when no server item with the same
