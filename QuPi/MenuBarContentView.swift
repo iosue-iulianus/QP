@@ -54,9 +54,10 @@ struct MenuBarContentView: View {
                 Divider()
             }
 
-            ForEach(appState.enabledSections) { section in
+            let sections = appState.enabledSections
+            ForEach(sections) { section in
                 self.section(for: section)
-                if section != appState.enabledSections.last {
+                if section != sections.last {
                     Divider()
                 }
             }
@@ -163,6 +164,8 @@ struct MenuBarContentView: View {
 
     @ViewBuilder
     private func section(for section: MenuSection) -> some View {
+        // Filtered and sorted once per redraw, shared by the count and the carousel.
+        let items = visibleItems(for: section)
         Button {
             // Rows are static headers while a search is active.
             guard !appState.isSearchActive else { return }
@@ -175,7 +178,7 @@ struct MenuBarContentView: View {
                     .frame(width: 20)
                 Text(section.title)
                 Spacer()
-                if let count = visibleItems(for: section)?.count {
+                if let count = items?.count {
                     Text("\(count)")
                         .foregroundStyle(.secondary)
                         .font(.caption)
@@ -192,13 +195,13 @@ struct MenuBarContentView: View {
         .buttonStyle(.plain)
 
         if isExpanded(section) {
-            sectionContent(for: section)
+            sectionContent(for: section, items: items)
                 .padding(.bottom, 10)
         }
     }
 
     @ViewBuilder
-    private func sectionContent(for section: MenuSection) -> some View {
+    private func sectionContent(for section: MenuSection, items: [MediaItem]?) -> some View {
         if appState.loadingSections.contains(section) {
             HStack {
                 Spacer()
@@ -221,7 +224,7 @@ struct MenuBarContentView: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
             
-        } else if let items = visibleItems(for: section), !items.isEmpty {
+        } else if let items, !items.isEmpty {
             MediaCarouselView(
                 items: items,
                 selectedID: appState.currentItem?.id ?? appState.drillPath[section]?.first?.id,
