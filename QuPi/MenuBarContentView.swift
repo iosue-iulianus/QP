@@ -172,9 +172,10 @@ struct MenuBarContentView: View {
                 .help("Clear search")
             }
         }
-        .padding(.horizontal, 7)
+        // Capsule, like the macOS 26 search field.
+        .padding(.horizontal, 10)
         .padding(.vertical, 5)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 7))
+        .background(.quaternary, in: Capsule())
         .frame(maxWidth: .infinity)
         .onChange(of: appState.searchText) {
             if !appState.searchText.isEmpty {

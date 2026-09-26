@@ -126,37 +126,32 @@ struct LibrariesSettingsView: View {
     private var localSection: some View {
         Section {
             ForEach(MediaType.allCases) { type in
-                HStack {
-                    Label(type.title, systemImage: type.systemImage)
-                    let countText = libraryCountText(for: type)
-                    if !countText.isEmpty {
-                        Text(countText)
-                            .foregroundStyle(.secondary)
+                LabeledContent {
+                    HStack {
+                        if let folder = DownloadManager.resolvedLibraryFolder(for: type) {
+                            Button("Show in Finder") {
+                                NSWorkspace.shared.open(folder)
+                            }
+                        }
+                        Button("Choose…") {
+                            chooseLibraryFolder(for: type)
+                        }
                     }
-                    Spacer()
-                    if let folder = DownloadManager.resolvedLibraryFolder(for: type) {
-                        Button("Open Location") {
-                            NSWorkspace.shared.open(folder)
-                        }
-                        .controlSize(.small)
-                        Button("Update Location") {
-                            chooseLibraryFolder(for: type)
-                        }
-                        .controlSize(.small)
-                    } else {
-                        Button("Choose Folder") {
-                            chooseLibraryFolder(for: type)
-                        }
-                        .controlSize(.small)
+                } label: {
+                    Label {
+                        Text(type.title)
+                        let countText = libraryCountText(for: type)
+                        Text(countText.isEmpty
+                             ? (DownloadManager.resolvedLibraryFolder(for: type) == nil ? "No folder chosen" : "No files found")
+                             : countText)
+                    } icon: {
+                        Image(systemName: type.systemImage)
                     }
                 }
                 // Use a type-specific ID so SwiftUI can distinguish the three rows.
                 .id("\(type.rawValue)-\(localRefresh)")
             }
-        } header: {
-            HStack {
-                SectionInfoHeader(title: "Local Library", info: "Choose a folder for each media type to make local files available in the menu bar. Press Refresh to index new files and fetch metadata from Last.fm, Trakt, and TMDb.")
-                Spacer()
+            LabeledContent {
                 if isRefreshing {
                     ProgressView()
                         .controlSize(.small)
@@ -169,9 +164,16 @@ struct LibrariesSettingsView: View {
                             isRefreshing = false
                         }
                     }
-                    .controlSize(.small)
                 }
+            } label: {
+                Text("Refresh Local Library")
+                Text("Index new files and fetch posters and details from Last.fm, Trakt and TMDb.")
             }
+        } header: {
+            Text("Local Library")
+        } footer: {
+            Text("Choose a folder for each media type to show your own files in the menu.")
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -233,13 +235,19 @@ struct LibrariesSettingsView: View {
                 Text(status.isEmpty ? "No libraries loaded yet." : status)
                     .foregroundStyle(.secondary)
             }
-        } header: {
-            HStack {
-                SectionInfoHeader(title: title, info: "Selected libraries appear in the menu bar dropdown. With none selected, all libraries are included.")
-                Spacer()
-                Button("Refresh") { refresh() }
-                    .controlSize(.small)
+            LabeledContent {
+                Button("Reload") { refresh() }
+            } label: {
+                Text("Reload Libraries")
+                if !status.isEmpty, !entries.isEmpty {
+                    Text(status)
+                }
             }
+        } header: {
+            Text(title)
+        } footer: {
+            Text("Selected libraries appear in the menu. With none selected, all are included.")
+                .foregroundStyle(.secondary)
         }
     }
 

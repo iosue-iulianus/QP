@@ -12,33 +12,41 @@ struct GeneralSettingsView: View {
 
     var body: some View {
         Form {
-            Section {
-                Toggle("Load on Startup", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { _, isOn in
-                        updateLoginItem(enabled: isOn)
-                    }
-            } header: {
-                SectionInfoHeader(
-                    title: "General",
-                    info: requiresApproval
-                        ? "QuPi is registered but needs approval in System Settings › General › Login Items before it can launch at startup."
-                        : "Launch QuPi automatically when you log in."
-                )
+            Section("Startup") {
+                Toggle(isOn: $launchAtLogin) {
+                    Text("Open at Login")
+                    Text(requiresApproval
+                         ? "Needs your approval in System Settings > General > Login Items."
+                         : "Start QuPi when you log in.")
+                }
+                .onChange(of: launchAtLogin) { _, isOn in
+                    updateLoginItem(enabled: isOn)
+                }
             }
 
-            Section {
-                Toggle("Use Mac Media Keys", isOn: $useMediaKeys)
-                Button("Grant Network Access", systemImage: "network") {
-                    openLocalNetworkSettings()
+            Section("Controls and Access") {
+                Toggle(isOn: $useMediaKeys) {
+                    Text("Use Media Keys")
+                    Text("Play, pause and skip with your keyboard's media keys.")
                 }
-                .disabled(networkMonitor.status == .granted)
-            } header: {
-                SectionInfoHeader(
-                    title: "Access",
-                    info: networkMonitor.status == .granted
-                        ? "QuPi has local network access and can discover servers on your network. Media keys let you play/pause and skip tracks globally."
-                        : "Grant QuPi access to find and connect to Plex and Jellyfin servers on your local network."
-                )
+                LabeledContent {
+                    if networkMonitor.status == .granted {
+                        Label {
+                            Text("Allowed")
+                        } icon: {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                        }
+                        .foregroundStyle(.secondary)
+                    } else {
+                        Button("Open Privacy Settings…") {
+                            openLocalNetworkSettings()
+                        }
+                    }
+                } label: {
+                    Text("Local Network")
+                    Text("Needed to find Plex and Jellyfin servers on your network.")
+                }
             }
         }
         .formStyle(.grouped)

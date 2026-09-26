@@ -11,32 +11,55 @@ struct PlaybackSettingsView: View {
 
     var body: some View {
         Form {
-            Section {
-                Picker("Auto-Continue Movie", selection: $movieAutoContinue) {
+            Section("Movies") {
+                Picker(selection: $movieAutoContinue) {
                     Text("Off").tag(MovieAutoContinue.off.rawValue)
-                    Text("In Sequence").tag(MovieAutoContinue.inSequence.rawValue)
-                    Text("By Director").tag(MovieAutoContinue.byDirector.rawValue)
-                    Text("By Lead Actor").tag(MovieAutoContinue.byLeadActor.rawValue)
+                    Text("Next in Series").tag(MovieAutoContinue.inSequence.rawValue)
+                    Text("Same Director").tag(MovieAutoContinue.byDirector.rawValue)
+                    Text("Same Lead Actor").tag(MovieAutoContinue.byLeadActor.rawValue)
+                } label: {
+                    Text("When a Movie Ends")
+                    Text("Play the next movie in its series, or the next release by its director or lead actor.")
                 }
-                Toggle("Auto-Continue TV", isOn: $tvAutoContinue)
-                Picker("Auto-Continue Music", selection: $musicAutoContinue) {
-                    Text("Off").tag(MusicAutoContinue.off.rawValue)
-                    Text("By Release Date").tag(MusicAutoContinue.inSequence.rawValue)
-                    Text("By Genre").tag(MusicAutoContinue.shuffleByGenre.rawValue)
+            }
+
+            Section("Shows") {
+                Toggle(isOn: $tvAutoContinue) {
+                    Text("Play Next Episode")
+                    Text("Start the next episode when one ends.")
                 }
-                .pickerStyle(.segmented)
-                Picker("Continue Music", selection: $continueMusic) {
-                    Text("By Album / Playlist").tag(ContinueMusicGrouping.byAlbumPlaylist.rawValue)
+            }
+
+            Section("Music") {
+                // Off and In Order both finish the album or playlist in order
+                // (see AppState.autoContinueItem); the raw values are kept so
+                // saved settings still decode.
+                Picker(selection: $musicAutoContinue) {
+                    Text("Finish Album").tag(MusicAutoContinue.off.rawValue)
+                    Text("In Order").tag(MusicAutoContinue.inSequence.rawValue)
+                    Text("Shuffle by Artist").tag(MusicAutoContinue.shuffleByGenre.rawValue)
+                } label: {
+                    Text("When a Song Ends")
+                    Text("Keep playing the album or playlist in order, or random songs by the same artist.")
+                }
+            }
+
+            Section("Continue Watching") {
+                Picker(selection: $continueMusic) {
+                    Text("By Album or Playlist").tag(ContinueMusicGrouping.byAlbumPlaylist.rawValue)
                     Text("By Song").tag(ContinueMusicGrouping.bySong.rawValue)
+                } label: {
+                    Text("Group Music")
+                    Text("Show unfinished songs individually, or as their album or playlist.")
                 }
-                .pickerStyle(.segmented)
-                Picker("Continue Timeout", selection: $continueTimeout) {
+                Picker(selection: $continueTimeout) {
                     ForEach(ContinueTimeout.allCases, id: \.rawValue) { timeout in
                         Text(timeout.title).tag(timeout.rawValue)
                     }
+                } label: {
+                    Text("Keep Items For")
+                    Text("How long something you haven't finished stays in Continue Watching.")
                 }
-            } header: {
-                SectionInfoHeader(title: "Playback", info: "In Sequence plays the next movie in the same series; By Director / By Lead Actor plays that person's next released movie (lead actor requires Plex or Jellyfin). Auto-Continue TV plays the next episode. Music \"Off\" still finishes the album in order; Shuffle by Artist continues with random tracks by the same artist. Continue Music chooses whether the Continue Watching section lists individual in-progress songs or collapses them into their album/playlist. Continue Timeout controls how long unfinished items stay in the Continue Watching section.")
             }
         }
         .formStyle(.grouped)

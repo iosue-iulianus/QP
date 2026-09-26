@@ -165,7 +165,6 @@ struct AccountsSettingsView: View {
             }
             Spacer()
             Button("Remove") { removePlexServer(server) }
-                .controlSize(.small)
         }
     }
 
@@ -604,7 +603,7 @@ struct AccountsSettingsView: View {
     // MARK: - TMDb
 
     private var tmdbSection: some View {
-        Section("The Movie Database") {
+        Section {
             TextField("API Key (v3)", text: $tmdbAPIKey)
                 .onChange(of: tmdbAPIKey) {
                     // Saved on every edit so closing Settings never loses it;
@@ -614,8 +613,10 @@ struct AccountsSettingsView: View {
                 .task(id: tmdbAPIKey) { await checkTMDbKey() }
             tmdbKeyStatusLabel
                 .font(.callout)
-            Text("Used to fetch posters and metadata when refreshing your Local Library. Get a free API key at themoviedb.org/settings/api.")
-                .font(.callout)
+        } header: {
+            Text("The Movie Database")
+        } footer: {
+            Text("Used to fetch posters and details when refreshing your Local Library. Get a free API key at themoviedb.org/settings/api.")
                 .foregroundStyle(.secondary)
         }
     }
