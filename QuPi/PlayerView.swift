@@ -527,12 +527,6 @@ private struct PiPControlsOverlay: View {
         }
         .frame(height: 16)
     }
-
-    private func timeString(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds > 0 else { return "0:00" }
-        let total = Int(seconds)
-        return String(format: "%d:%02d", total / 60, total % 60)
-    }
 }
 
 // MARK: - Music mini-player
@@ -680,12 +674,6 @@ private struct MusicPlayerLayout: View {
         }
         .frame(width: 28, height: 28)
         .clipShape(RoundedRectangle(cornerRadius: 4))
-    }
-
-    private func timeString(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds > 0 else { return "0:00" }
-        let total = Int(seconds)
-        return String(format: "%d:%02d", total / 60, total % 60)
     }
 }
 

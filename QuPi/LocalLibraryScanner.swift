@@ -276,16 +276,12 @@ struct LocalLibraryScanner {
         }
 
         // Match "Title.YYYY." or "Title 2010 1080p" format.
-        if year == nil {
-            let pattern = #"(?<!\d)(\d{4})(?!\d)"#
-            if let regex = try? NSRegularExpression(pattern: pattern),
-               let match = regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)),
-               let range = Range(match.range(at: 1), in: s) {
-                if let y = Int(s[range]), y >= 1900 && y <= 2100 {
-                    year = y
-                    s = String(s[..<range.lowerBound]).trimmingCharacters(in: CharacterSet(charactersIn: ". _-").union(.whitespaces))
-                }
-            }
+        // (?:^|\D) stands in for a (?<!\d) lookbehind, which Swift Regex lacks.
+        if year == nil,
+           let match = s.firstMatch(of: /(?:^|\D)(\d{4})(?!\d)/),
+           let y = Int(match.1), (1900...2100).contains(y) {
+            year = y
+            s = String(s[..<match.1.startIndex]).trimmingCharacters(in: CharacterSet(charactersIn: ". _-").union(.whitespaces))
         }
 
         // Replace dots and underscores used as word separators, strip quality tags.
@@ -301,56 +297,25 @@ struct LocalLibraryScanner {
     /// Parses episode info from a file stem.
     /// Recognises: "S01E05", "1x05", remaining stem becomes title with quality/metadata tags stripped.
     func parseEpisode(from stem: String) -> (title: String, season: Int?, episode: Int?) {
-        var s = stem
-
-        // Pattern: S01E05 or s01e05
-        if let regex = try? NSRegularExpression(pattern: #"[Ss](\d{1,2})[Ee](\d{1,2})"#),
-           let match = regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) {
-            let season = Int((s as NSString).substring(with: match.range(at: 1)))
-            let episode = Int((s as NSString).substring(with: match.range(at: 2)))
-            if let fullRange = Range(match.range, in: s) {
-                s = String(s[fullRange.upperBound...]).trimmingCharacters(in: CharacterSet(charactersIn: " .-_"))
-            }
-            s = stripFileTags(from: s)
-            return (s.isEmpty ? stem : s, season, episode)
+        // S01E05 / s01e05, then 1x05.
+        for pattern in [/[Ss](\d{1,2})[Ee](\d{1,2})/, /(\d{1,2})x(\d{1,2})/] {
+            guard let match = stem.firstMatch(of: pattern) else { continue }
+            let rest = String(stem[match.range.upperBound...]).trimmingCharacters(in: CharacterSet(charactersIn: " .-_"))
+            let title = stripFileTags(from: rest)
+            return (title.isEmpty ? stem : title, Int(match.1), Int(match.2))
         }
-
-        // Pattern: 1x05
-        if let regex = try? NSRegularExpression(pattern: #"(\d{1,2})x(\d{1,2})"#),
-           let match = regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) {
-            let season = Int((s as NSString).substring(with: match.range(at: 1)))
-            let episode = Int((s as NSString).substring(with: match.range(at: 2)))
-            if let fullRange = Range(match.range, in: s) {
-                s = String(s[fullRange.upperBound...]).trimmingCharacters(in: CharacterSet(charactersIn: " .-_"))
-            }
-            s = stripFileTags(from: s)
-            return (s.isEmpty ? stem : s, season, episode)
-        }
-
         return (stem, nil, nil)
     }
 
     private func stripFileTags(from s: String) -> String {
-        var result = s
-        if let braceRegex = try? NSRegularExpression(pattern: #"\{[^}]*\}"#) {
-            result = braceRegex.stringByReplacingMatches(
-                in: result, range: NSRange(result.startIndex..., in: result), withTemplate: "")
-        }
-        if let bracketRegex = try? NSRegularExpression(pattern: #"\[[^\]]*\]"#) {
-            result = bracketRegex.stringByReplacingMatches(
-                in: result, range: NSRange(result.startIndex..., in: result), withTemplate: "")
-        }
-        return result.trimmingCharacters(in: .whitespaces)
+        s.replacing(/\{[^}]*\}/, with: "")
+            .replacing(/\[[^\]]*\]/, with: "")
+            .trimmingCharacters(in: .whitespaces)
     }
 
     private func parseSeasonNumber(from dirName: String) -> Int? {
         // "Season 1", "Season 01", "S1", "S01"
-        if let regex = try? NSRegularExpression(pattern: #"(?:[Ss]eason\s*|[Ss])(\d{1,2})"#),
-           let match = regex.firstMatch(in: dirName, range: NSRange(dirName.startIndex..., in: dirName)),
-           let range = Range(match.range(at: 1), in: dirName) {
-            return Int(dirName[range])
-        }
-        return nil
+        dirName.firstMatch(of: /(?:[Ss]eason\s*|[Ss])(\d{1,2})/).flatMap { Int($0.1) }
     }
 
     private func formatEpisodeCode(season: Int?, episode: Int?) -> String? {
@@ -363,12 +328,8 @@ struct LocalLibraryScanner {
 
     /// Strips a leading track number (e.g. "01 ", "01 - ", "01. ") from the stem.
     private func parseTrackTitle(from stem: String) -> String {
-        if let regex = try? NSRegularExpression(pattern: #"^\d{1,3}[\s.\-_]+"#),
-           let match = regex.firstMatch(in: stem, range: NSRange(stem.startIndex..., in: stem)),
-           let range = Range(match.range, in: stem) {
-            let title = String(stem[range.upperBound...]).trimmingCharacters(in: .whitespaces)
-            return title.isEmpty ? stem : title
-        }
-        return stem
+        guard let match = stem.prefixMatch(of: /\d{1,3}[\s.\-_]+/) else { return stem }
+        let title = String(stem[match.range.upperBound...]).trimmingCharacters(in: .whitespaces)
+        return title.isEmpty ? stem : title
     }
 }

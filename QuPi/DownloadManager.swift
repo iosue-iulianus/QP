@@ -662,16 +662,10 @@ final class DownloadManager {
                 seasonName = pt
             } else if let idxStr = item.attributes["parentIndex"], let idx = Int(idxStr) {
                 seasonName = "Season \(String(format: "%02d", idx))"
+            } else if let match = filename.firstMatch(of: /[Ss](\d{1,2})[Ee]\d{1,2}/), let num = Int(match.1) {
+                seasonName = "Season \(String(format: "%02d", num))"
             } else {
-                let regex = try? NSRegularExpression(pattern: #"[Ss](\d{1,2})[Ee]\d{1,2}"#)
-                let range = NSRange(filename.startIndex..., in: filename)
-                if let match = regex?.firstMatch(in: filename, range: range),
-                   let numRange = Range(match.range(at: 1), in: filename),
-                   let num = Int(filename[numRange]) {
-                    seasonName = "Season \(String(format: "%02d", num))"
-                } else {
-                    seasonName = nil
-                }
+                seasonName = nil
             }
 
             if let show = showName.map(sanitizePathComponent), let season = seasonName.map(sanitizePathComponent) {
