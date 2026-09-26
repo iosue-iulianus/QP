@@ -71,6 +71,12 @@ MediaType (movies / tvShows / music)
 
 `DownloadManager.localURL(for:)` is checked first by `AppState.streamURL`, so downloaded items play from disk.
 
+### Caches to keep consistent
+
+- `AppState` caches the Plex and Jellyfin configurations (Keychain reads are slow). Call `resetCatalog()` (or `plexServersChanged()`) after any account or server change.
+- `DownloadManager` caches resolved folder bookmarks and parsed indexes. Change folders only through `setFolder`/`setLibraryFolder` and write indexes only through `writeIndex(_:to:)`.
+- Views must not read `appState.currentTime` in large containers (carousels, the menu); it changes twice a second during playback. Read it in the smallest view that shows it.
+
 ### Playback
 
 `isAVFoundationPlayable(_:)` picks the engine: `AVPlayer` for network URLs and mp4/mov/m4v/common audio files, `VLCPlayerBridge` (SwiftVLC, libVLC linked statically) for everything else, such as mkv and avi.

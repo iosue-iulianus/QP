@@ -15,6 +15,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Posters now load through a new `ArtworkImage` view instead of `AsyncImage(request:)` and `.asyncImageURLSession(_:)`, which only exist on macOS 27. Images are decoded and downsampled off the main thread, and the "Cache Artwork Locally" setting still applies.
 - Xcode previews (`#Preview`) are skipped in SwiftPM builds, since previews only work in Xcode. They still work in the Xcode project.
 - `.gitignore` now excludes the SwiftPM build output (`.build/` and `dist/`).
+- Faster menu and browsing: server settings and download indexes are kept in memory instead of being re-read from the Keychain and disk on every redraw, sources load in parallel, and inline music playback no longer redraws every poster twice a second.
+- A Plex server address that works after the saved one fails is remembered, so later requests and launches no longer wait for the dead address to time out.
+- Download indexes are written atomically, so a crash mid-write can't corrupt them.
 - The menu header says "No sources" instead of "Sample catalog" when no server is connected, since there is no sample catalog.
 
 ### Removed
