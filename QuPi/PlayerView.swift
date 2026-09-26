@@ -49,31 +49,13 @@ struct PlayerView: View {
                             get: { appState.isScrubbing },
                             set: { appState.isScrubbing = $0 }
                         ),
-                        onSeek: { seconds in
-                            appState.isScrubbing = true
-                            appState.seek(to: seconds)
-                            appState.isScrubbing = false
-                        },
+                        onSeek: seek,
                         onPlayPause: appState.togglePlayPause,
                         onNext: playNext,
                         onPick: { picked in item = picked }
                     )
                     .frame(minWidth: 300, minHeight: 480)
-                    .toolbar {
-                        ToolbarItem(placement: .primaryAction) {
-                            Button {
-                                isPinned.toggle()
-                            } label: {
-                                Image(systemName: isPinned ? "pin.fill" : "pin")
-                                    .font(.system(size: 9))
-                            }
-                            .controlSize(.small)
-                            .help(isPinned ? "Let other windows cover this player" : "Keep this player above other windows")
-                        }
-                        // Drop the shared glass pill; the button keeps its
-                        // own compact circular background.
-                        .sharedBackgroundVisibility(.hidden)
-                    }
+                    .toolbar { pinToolbarItem }
                 } else if let player = appState.player {
                     videoPlayerView(player: player)
                 } else if let bridge = appState.vlcBridge {
@@ -144,11 +126,12 @@ struct PlayerView: View {
     private static let pipControlsMaxHeight: CGFloat = 480
 
     private func videoPlayerView(player: AVPlayer) -> some View {
-        VideoPlayerRepresentable(
-            player: player,
-            controlsStyle: usePiPControls ? .none : .inline,
-            videoGravity: selectedCrop == .original ? .resizeAspect : .resizeAspectFill
-        )
+        videoChrome(
+            VideoPlayerRepresentable(
+                player: player,
+                controlsStyle: usePiPControls ? .none : .inline,
+                videoGravity: selectedCrop == .original ? .resizeAspect : .resizeAspectFill
+            )
             .overlay {
                 GeometryReader { geo in
                     VideoClickCapture(onSingleClick: appState.togglePlayPause)
@@ -160,23 +143,52 @@ struct PlayerView: View {
                 }
             }
             .overlay {
-                if usePiPControls {
-                    PiPControlsOverlay(
-                        isPlaying: appState.isPlaying,
-                        visible: controlsVisible || !appState.isPlaying,
-                        isPinned: $isPinned,
-                        currentTime: appState.currentTime,
-                        totalDuration: appState.totalDuration,
-                        onPlayPause: appState.togglePlayPause,
-                        onSeek: { seconds in
-                            appState.isScrubbing = true
-                            appState.seek(to: seconds)
-                            appState.isScrubbing = false
-                        },
-                        onClose: { dismissWindow() }
-                    )
-                }
+                // AVKit draws its own inline transport bar at normal sizes.
+                if usePiPControls { pipControls }
             }
+            .task(id: ObjectIdentifier(player)) {
+                await observeVideoAspectRatio(of: player)
+            }
+        )
+    }
+
+    /// SwiftVLC video view with the same feature set as the AVKit path:
+    /// aspect-ratio-locked window, auto-hiding chrome, size-driven control switch
+    /// (full transport bar at normal size, PiP-style overlay when tiny), and crop.
+    private func vlcPlayerView(bridge: VLCPlayerBridge) -> some View {
+        videoChrome(
+            VLCVideoPlayerView(bridge: bridge)
+                .overlay {
+                    VideoClickCapture(onSingleClick: appState.togglePlayPause)
+                }
+                .overlay {
+                    if usePiPControls {
+                        pipControls
+                    } else {
+                        VideoTransportBar(
+                            isPlaying: appState.isPlaying,
+                            visible: controlsVisible || !appState.isPlaying,
+                            currentTime: appState.currentTime,
+                            totalDuration: appState.totalDuration,
+                            onPlayPause: appState.togglePlayPause,
+                            onSeek: seek
+                        )
+                    }
+                }
+                .task(id: ObjectIdentifier(bridge.player)) {
+                    await observeVLCVideoAspectRatio(of: bridge)
+                }
+                .onChange(of: selectedCrop) { _, newCrop in
+                    bridge.setCrop(newCrop)
+                }
+        )
+    }
+
+    /// Window behaviour shared by both video engines: size-driven switch to
+    /// the PiP-style controls, full-window layout under the titlebar, and
+    /// the toolbar.
+    private func videoChrome(_ video: some View) -> some View {
+        video
             .onGeometryChange(for: CGSize.self) { proxy in
                 proxy.size
             } action: { size in
@@ -190,13 +202,10 @@ struct PlayerView: View {
             .frame(minWidth: 200, minHeight: 120)
             // Fill the whole window, with the titlebar floating over the
             // video (QuickTime-style). This lets the window frame match the
-            // video aspect ratio exactly — otherwise the toolbar strip makes
+            // video aspect ratio exactly; otherwise the toolbar strip makes
             // the visible video area shorter than the frame and letterbox
             // bars appear.
             .ignoresSafeArea(.container, edges: .top)
-            .task(id: ObjectIdentifier(player)) {
-                await observeVideoAspectRatio(of: player)
-            }
             .toolbar {
                 // Tiny (PiP-style) mode has no toolbar at all; the overlay
                 // provides its own close/pin buttons like the system popout.
@@ -229,115 +238,46 @@ struct PlayerView: View {
                         .help("Crop the video to a fixed aspect ratio")
                     }
                     .sharedBackgroundVisibility(.hidden)
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            isPinned.toggle()
-                        } label: {
-                            Image(systemName: isPinned ? "pin.fill" : "pin")
-                                .font(.system(size: 9))
-                        }
-                        .controlSize(.small)
-                        .help(isPinned ? "Let other windows cover this player" : "Keep this player above other windows")
-                    }
-                    // Drop the shared glass pill; the button keeps its own
-                    // compact circular background.
-                    .sharedBackgroundVisibility(.hidden)
+                    pinToolbarItem
                 }
             }
     }
 
-    /// SwiftVLC video view with the same feature set as the AVKit path:
-    /// aspect-ratio-locked window, auto-hiding chrome, size-driven control switch
-    /// (full transport bar at normal size, PiP-style overlay when tiny), and crop.
-    private func vlcPlayerView(bridge: VLCPlayerBridge) -> some View {
-        VLCVideoPlayerView(bridge: bridge)
-            .overlay {
-                VideoClickCapture(onSingleClick: appState.togglePlayPause)
+    private var pinToolbarItem: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                isPinned.toggle()
+            } label: {
+                Image(systemName: isPinned ? "pin.fill" : "pin")
+                    .font(.system(size: 9))
             }
-            .overlay {
-                if usePiPControls {
-                    PiPControlsOverlay(
-                        isPlaying: appState.isPlaying,
-                        visible: controlsVisible || !appState.isPlaying,
-                        isPinned: $isPinned,
-                        currentTime: appState.currentTime,
-                        totalDuration: appState.totalDuration,
-                        onPlayPause: appState.togglePlayPause,
-                        onSeek: { seconds in
-                            appState.isScrubbing = true
-                            appState.seek(to: seconds)
-                            appState.isScrubbing = false
-                        },
-                        onClose: { dismissWindow() }
-                    )
-                } else {
-                    VideoTransportBar(
-                        isPlaying: appState.isPlaying,
-                        visible: controlsVisible || !appState.isPlaying,
-                        currentTime: appState.currentTime,
-                        totalDuration: appState.totalDuration,
-                        onPlayPause: appState.togglePlayPause,
-                        onSeek: { seconds in
-                            appState.isScrubbing = true
-                            appState.seek(to: seconds)
-                            appState.isScrubbing = false
-                        }
-                    )
-                }
-            }
-            .onGeometryChange(for: CGSize.self) { proxy in
-                proxy.size
-            } action: { size in
-                usePiPControls = size.width < Self.pipControlsMaxWidth
-                    && size.height < Self.pipControlsMaxHeight
-            }
-            .frame(minWidth: 200, minHeight: 120)
-            .ignoresSafeArea(.container, edges: .top)
-            .task(id: ObjectIdentifier(bridge.player)) {
-                await observeVLCVideoAspectRatio(of: bridge)
-            }
-            .onChange(of: selectedCrop) { _, newCrop in
-                bridge.setCrop(newCrop)
-            }
-            .toolbar {
-                if !usePiPControls {
-                    ToolbarItem(placement: .principal) {
-                        Text(windowTitle)
-                            .font(.headline)
-                            .lineLimit(1)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .glassEffect()
-                    }
-                    .sharedBackgroundVisibility(.hidden)
-                    ToolbarItem(placement: .primaryAction) {
-                        Menu {
-                            Picker("Crop", selection: $selectedCrop) {
-                                ForEach(VideoCrop.allCases) { crop in
-                                    Text(crop.title).tag(crop)
-                                }
-                            }
-                            .pickerStyle(.inline)
-                        } label: {
-                            Label("Crop", systemImage: "aspectratio")
-                        }
-                        .controlSize(.small)
-                        .help("Crop the video to a fixed aspect ratio")
-                    }
-                    .sharedBackgroundVisibility(.hidden)
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            isPinned.toggle()
-                        } label: {
-                            Image(systemName: isPinned ? "pin.fill" : "pin")
-                                .font(.system(size: 9))
-                        }
-                        .controlSize(.small)
-                        .help(isPinned ? "Let other windows cover this player" : "Keep this player above other windows")
-                    }
-                    .sharedBackgroundVisibility(.hidden)
-                }
-            }
+            .controlSize(.small)
+            .help(isPinned ? "Let other windows cover this player" : "Keep this player above other windows")
+        }
+        // Drop the shared glass pill; the button keeps its own compact
+        // circular background.
+        .sharedBackgroundVisibility(.hidden)
+    }
+
+    private var pipControls: some View {
+        PiPControlsOverlay(
+            isPlaying: appState.isPlaying,
+            visible: controlsVisible || !appState.isPlaying,
+            isPinned: $isPinned,
+            currentTime: appState.currentTime,
+            totalDuration: appState.totalDuration,
+            onPlayPause: appState.togglePlayPause,
+            onSeek: seek,
+            onClose: { dismissWindow() }
+        )
+    }
+
+    /// Seeks with scrubbing flagged so the periodic time observer doesn't
+    /// overwrite the new position mid-seek.
+    private func seek(_ seconds: Double) {
+        appState.isScrubbing = true
+        appState.seek(to: seconds)
+        appState.isScrubbing = false
     }
 
     /// Polls the current item's presentation size, which (unlike the asset's
