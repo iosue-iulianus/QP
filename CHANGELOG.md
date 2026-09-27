@@ -18,11 +18,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - README: "About this fork" lists the additions above and credits both forks it combines.
-- The Settings window's height can be adjusted (the width stays fixed, like System Settings); each tab scrolls when it doesn't fit.
+- Settings are rebuilt to match macOS 26 System Settings:
+  - The ⓘ popovers in section headers are gone. Each option explains itself in a grey line underneath, with longer notes in section footers.
+  - Buttons moved out of section headers into rows, and native controls replace hand-rolled layouts (Menu Order uses plain Form rows with drag and drop instead of a bordered list inside the Form).
+  - General: "Open at Login", and a Local Network status row (Allowed) that only offers a button when access is missing.
+  - Playback: Movies / Shows / Music / Continue Watching sections with plain-language menus ("When a Movie Ends: Next in Series / Same Director…") instead of long segmented controls. Music options are named for what they do: "By Genre" was actually shuffling songs by the same artist and is now "Shuffle by Artist", and "Off" is now "Finish Album".
+  - Visuals: Menu / Player / Sections / Navigation sections, and a sorting section per media type (Sort By, Order, Downloaded First) instead of a crowded row per type.
+  - Data: a section per media type (folder, storage limit, usage). "Delete Downloads…" now asks for confirmation instead of deleting straight away. "Show Download Button On" checkboxes replace the "Download Indicators" switch, which only revealed them.
+  - The window's height can be adjusted; the width stays fixed, like System Settings, and each tab scrolls when it doesn't fit.
 - The Offline Mode button in the menu uses a download arrow (filled while Offline Mode is on) instead of an airplane.
-- Settings follow the macOS 26 System Settings style. Each option explains itself in a grey line underneath instead of behind ⓘ buttons in section headers, long option lists use menus, Playback, Visuals and Data are split into clearer sections, and buttons moved out of section headers into rows. General shows whether local network access is allowed. The menu's search field is a capsule.
-- Data: each media type has its own section (folder, storage limit, usage), and "Delete Downloads…" now asks for confirmation instead of deleting straight away. The "Download Indicators" switch, which only revealed the level checkboxes, is replaced by an always-visible "Show Download Button On" section.
-- Music auto-continue options are named for what they do: "By Genre" was actually shuffling songs by the same artist and is now "Shuffle by Artist", and "Off" is now "Finish Album".
 - Search shows only the sections with matches. Clicking the search field no longer expands every section (catalogs still load in the background, so results appear as soon as you type), and instead of a "No matches" row per library there is one "Searching…" row while results may still arrive, or a single "No matches" note.
 - Plex connects in seconds away from home. All known addresses of a server are checked at once (Plex's token-free `/identity` endpoint, 3 s limit) on first use, after a network change (Wi-Fi, hotspot, VPN) and when the current address stops answering, and the fastest one is used and saved. Before, each unreachable LAN address had to time out (about 60 s each) first.
 - Search ignores spaces, punctuation, case and accents in titles, so "madmen" finds "Mad Men" and "amelie" finds "Amélie".
