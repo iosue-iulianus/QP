@@ -29,7 +29,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
-- The Plex token is never sent over plain HTTP to a remote address. Discovered remote connections are HTTPS only; local ones try HTTPS before HTTP.
+- Fixed the Plex token being sent unencrypted over the internet. For every direct-IP connection, including public (remote) IPs, `http://` was tried before `https://`, and every request carries the token. Discovered remote connections are now HTTPS only; local ones try HTTPS before HTTP.
 
 ## 2026-09-26
 
