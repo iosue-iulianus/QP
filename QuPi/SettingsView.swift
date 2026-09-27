@@ -29,6 +29,8 @@ struct SettingsView: View {
         .frame(width: 520)
         .frame(minHeight: 400, idealHeight: 560, maxHeight: .infinity)
         .background(ResizableSettingsWindow())
+        .onAppear { AppWindowActivation.windowOpened() }
+        .onDisappear { AppWindowActivation.windowClosed() }
     }
 }
 

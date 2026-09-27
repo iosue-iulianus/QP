@@ -96,8 +96,10 @@ struct PlayerView: View {
                 dismissWindow()
             }
         }
+        .onAppear { AppWindowActivation.windowOpened() }
         .onDisappear {
             appState.stopPlayback(if: item)
+            AppWindowActivation.windowClosed()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("QP.MediaKeyNext"))) { _ in
             if appState.currentItem?.id == item.id { playNext() }
@@ -1038,4 +1040,25 @@ private struct VideoClickCapture: NSViewRepresentable {
 private class ClickCaptureView: NSView {
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// QuPi is a menu bar app (LSUIElement): no Dock icon and no menu bar, so
+/// its windows get no app menus and none of their shortcuts (Full Screen,
+/// Hide, Close). While a player or the Settings window is open it becomes a
+/// regular app, and it goes back to menu bar only when the last one closes.
+enum AppWindowActivation {
+    private static var openWindows = 0
+
+    static func windowOpened() {
+        openWindows += 1
+        guard openWindows == 1 else { return }
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.activate()
+    }
+
+    static func windowClosed() {
+        openWindows = max(openWindows - 1, 0)
+        guard openWindows == 0 else { return }
+        NSApplication.shared.setActivationPolicy(.accessory)
+    }
 }

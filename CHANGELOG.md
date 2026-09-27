@@ -17,6 +17,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- While a player or the Settings window is open, QuPi shows a Dock icon and its own menu bar, so the usual shortcuts work (Control-Command-F for Full Screen, Command-H to hide, Command-W to close). It goes back to living only in the menu bar when the last of those windows closes.
 - README: "About this fork" lists the additions above and credits both forks it combines.
 - Settings are rebuilt to match macOS 26 System Settings:
   - The ⓘ popovers in section headers are gone. Each option explains itself in a grey line underneath, with longer notes in section footers.
